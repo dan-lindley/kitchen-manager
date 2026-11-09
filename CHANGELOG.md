@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Added the authenticated Kitchen Manager sidebar panel for catalogue search,
+  product creation/editing, stock changes, low-stock thresholds, and recent
+  transaction history.
+- Added optional product descriptions and reorder thresholds.
+- Migrated stored schema version 2 to version 3 while preserving inventory and
+  transaction records.
+
 ## 0.2.0
 
 - Added product creation, update, case-insensitive search, and shared generic

@@ -85,6 +85,68 @@ async def test_duplicate_barcode_and_product_are_rejected(
         await _create_product(engine)
 
 
+async def test_catalogue_includes_unstocked_products_and_reorder_status(
+    engine: InventoryEngine,
+) -> None:
+    """List zero-stock products and flag quantities below optional thresholds."""
+    unstocked = await _create_product(
+        engine, name="Eggs", reorder_threshold=6, description="Free range"
+    )
+    stocked = await _create_product(
+        engine, name="Milk", reorder_threshold=2
+    )
+    await engine.async_change_stock(
+        TransactionType.ADD,
+        product_id=stocked["id"],
+        quantity=1,
+        location="fridge",
+    )
+
+    all_products = engine.list_products()
+    eggs = next(row for row in all_products if row["product"]["id"] == unstocked["id"])
+    milk = next(row for row in all_products if row["product"]["id"] == stocked["id"])
+
+    assert eggs["low_stock"]
+    assert eggs["total_quantity"] == 0
+    assert eggs["product"]["description"] == "Free range"
+    assert milk["low_stock"]
+    assert milk["total_quantity"] == 1
+    assert len(engine.list_products("MILK")) == 1
+
+
+async def test_product_update_can_clear_optional_fields(
+    engine: InventoryEngine,
+) -> None:
+    """Clear optional metadata without losing product identity or stock."""
+    product = await _create_product(
+        engine,
+        brand="Brand",
+        description="Fresh",
+        barcode="123",
+        package_size=1,
+        package_unit="L",
+        reorder_threshold=2,
+    )
+
+    updated = await engine.async_update_product(
+        product_id=product["id"],
+        clear_fields=[
+            "brand",
+            "barcode",
+            "description",
+            "package",
+            "reorder_threshold",
+        ],
+    )
+
+    assert updated["brand"] is None
+    assert updated["barcode"] is None
+    assert updated["description"] is None
+    assert updated["package_size"] is None
+    assert updated["package_unit"] is None
+    assert updated["reorder_threshold"] is None
+
+
 async def test_add_consume_and_insufficient_stock(engine: InventoryEngine) -> None:
     """Persist stock transactions and prevent negative inventory."""
     product = await _create_product(engine)

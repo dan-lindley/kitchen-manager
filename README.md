@@ -4,6 +4,27 @@ A local-first Home Assistant custom integration for household food inventory
 and future meal planning. Kitchen Manager does not use Grocy, an external
 database, or Home Assistant's Recorder database.
 
+## My Kitchen panel
+
+After adding Kitchen Manager, open **Kitchen Manager** from the Home Assistant
+sidebar. The panel is served by Home Assistant from the integration package;
+it uses authenticated Home Assistant WebSocket commands and the same inventory
+engine and persistent store as the integration actions.
+
+The current panel supports:
+
+- Searching the local catalogue by product name, brand, or barcode.
+- Creating and editing products, including optional descriptions and reorder
+  thresholds.
+- Viewing stock across storage locations, adding stock, consuming stock, and
+  correcting quantities.
+- Reviewing the latest 30 stock transactions.
+
+Products below their optional reorder threshold are highlighted, including
+products with no stock. The panel does not expose a public inventory endpoint.
+It registers one sidebar panel for the single Kitchen Manager config entry and
+removes the panel when that entry unloads.
+
 ## Installation
 
 ### HACS
@@ -29,8 +50,8 @@ product's package-size metadata is descriptive and is not multiplied into stock.
 
 | Action | Required inputs | Optional inputs | Response |
 | --- | --- | --- | --- |
-| `kitchen_manager.create_product` | `name` | `brand`, `barcode`, `package_size`, `package_unit`, `ingredient_name` | `product` |
-| `kitchen_manager.update_product` | `product_id` | Product fields to update | `product` |
+| `kitchen_manager.create_product` | `name` | `brand`, `barcode`, `description`, `package_size`, `package_unit`, `ingredient_name`, `reorder_threshold` | `product` |
+| `kitchen_manager.update_product` | `product_id` | Product fields to update, `clear_fields` | `product` |
 | `kitchen_manager.find_product` | `search_term` | — | `products`, `count` |
 | `kitchen_manager.add_stock` | `product_id` **or** `barcode`, `quantity`, `location` | `operation_id` | Updated product/location quantity and transaction ID |
 | `kitchen_manager.consume_stock` | `product_id` **or** `barcode`, `quantity` | `location`, `operation_id` | Updated product/location quantity and transaction ID |
@@ -141,21 +162,24 @@ serialized so concurrent requests cannot overwrite one another. Home
 Assistant's configuration backups include this storage; include Home Assistant
 settings in backups.
 
-Version 1 data from Kitchen Manager 0.1.0 is migrated automatically. Existing
-stock retains its saved location (or defaults to `other` if no location was
-saved), and the new transaction history starts empty because the previous
-version did not record transactions. No history is automatically deleted.
+Version 1 data from Kitchen Manager 0.1.0 and version 2 data from 0.2.0 are
+migrated automatically. Existing product, inventory, and transaction IDs and
+stock are preserved. The new description and reorder threshold fields are
+optional and default to empty for existing products. Version 1 stock retains
+its saved location (or defaults to `other` if no location was saved), and its
+transaction history starts empty because that version did not record
+transactions. No history is automatically deleted.
 
 ## Current limitations
 
 - Barcode lookup is local catalogue matching only; Open Food Facts integration
   and scanner hardware are not implemented.
-- `update_product` changes provided non-empty fields; clearing optional fields
-  is not currently supported.
+- Best-before/use-by stock batches are not implemented; stock is currently
+  tracked as a per-product, per-location total.
 - Stock quantities are item/package counts and currently use the generic `item`
   unit; package-size conversion is not implemented.
-- Recipe management, meal recommendations, shopping-list integration, and voice
-  commands are planned, not implemented.
+- Meal repository, four-week planner, shopping list, and scanning/voice
+  workflows are planned, not implemented.
 
 ## Development
 

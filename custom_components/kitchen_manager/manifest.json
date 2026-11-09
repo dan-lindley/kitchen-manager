@@ -3,6 +3,7 @@
   "name": "Kitchen Manager",
   "codeowners": ["@dan-lindley"],
   "config_flow": true,
+  "dependencies": ["panel_custom", "websocket_api"],
   "documentation": "https://github.com/dan-lindley/kitchen-manager",
   "integration_type": "service",
   "iot_class": "calculated",

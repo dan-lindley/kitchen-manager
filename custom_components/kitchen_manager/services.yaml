@@ -15,6 +15,10 @@ create_product:
       example: "0123456789012"
       selector:
         text:
+    description:
+      example: Long-life whole milk
+      selector:
+        text:
     package_size:
       example: 400
       selector:
@@ -30,6 +34,13 @@ create_product:
       example: Chopped tomatoes
       selector:
         text:
+    reorder_threshold:
+      example: 2
+      selector:
+        number:
+          min: 0
+          step: any
+          mode: box
 update_product:
   name: Update product
   description: Update product details without changing inventory or stock history.
@@ -48,6 +59,9 @@ update_product:
     barcode:
       selector:
         text:
+    description:
+      selector:
+        text:
     package_size:
       selector:
         number:
@@ -60,6 +74,24 @@ update_product:
     ingredient_name:
       selector:
         text:
+    reorder_threshold:
+      selector:
+        number:
+          min: 0
+          step: any
+          mode: box
+    clear_fields:
+      description: Optional fields to clear; use package to clear package size and unit.
+      selector:
+        select:
+          multiple: true
+          options:
+            - brand
+            - barcode
+            - description
+            - package
+            - reorder_threshold
+            - ingredient
 find_product:
   name: Find product
   description: Search product names and brands case-insensitively, or match a barcode.

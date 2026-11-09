@@ -1,5 +1,6 @@
 """Tests for integration setup and config flow."""
 
+from homeassistant.components import frontend
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -19,7 +20,12 @@ async def test_setup_and_unload(
     assert entry.state is ConfigEntryState.LOADED
     assert isinstance(entry.runtime_data, InventoryEngine)
     assert entry.runtime_data.data.products == {}
+    assert frontend.async_panel_exists(hass, "kitchen-manager")
+    websocket_commands = hass.data["websocket_api"]
+    assert "kitchen_manager/catalog" in websocket_commands
+    assert "kitchen_manager/stock/change" in websocket_commands
     assert await hass.config_entries.async_unload(entry.entry_id)
+    assert not frontend.async_panel_exists(hass, "kitchen-manager")
 
 
 async def test_config_flow_creates_single_entry(

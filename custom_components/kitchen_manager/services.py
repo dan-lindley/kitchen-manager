@@ -39,9 +39,11 @@ CREATE_PRODUCT_SCHEMA = vol.Schema(
         vol.Required("name"): cv.string,
         vol.Optional("brand"): cv.string,
         vol.Optional("barcode"): cv.string,
+        vol.Optional("description"): cv.string,
         vol.Optional("package_size"): vol.Any(int, float),
         vol.Optional("package_unit"): cv.string,
         vol.Optional("ingredient_name"): cv.string,
+        vol.Optional("reorder_threshold"): vol.Any(int, float),
     }
 )
 UPDATE_PRODUCT_SCHEMA = vol.Schema(
@@ -50,9 +52,12 @@ UPDATE_PRODUCT_SCHEMA = vol.Schema(
         vol.Optional("name"): cv.string,
         vol.Optional("brand"): cv.string,
         vol.Optional("barcode"): cv.string,
+        vol.Optional("description"): cv.string,
         vol.Optional("package_size"): vol.Any(int, float),
         vol.Optional("package_unit"): cv.string,
         vol.Optional("ingredient_name"): cv.string,
+        vol.Optional("reorder_threshold"): vol.Any(int, float),
+        vol.Optional("clear_fields"): [cv.string],
     }
 )
 FIND_PRODUCT_SCHEMA = vol.Schema(

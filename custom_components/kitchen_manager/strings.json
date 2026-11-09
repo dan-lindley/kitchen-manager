@@ -15,9 +15,11 @@
         "name": {"name": "Name", "description": "Product name."},
         "brand": {"name": "Brand", "description": "Optional product brand."},
         "barcode": {"name": "Barcode", "description": "Optional unique barcode."},
+        "description": {"name": "Description", "description": "Optional product description."},
         "package_size": {"name": "Package size", "description": "Optional package size."},
         "package_unit": {"name": "Package unit", "description": "Unit for package size."},
-        "ingredient_name": {"name": "Generic ingredient", "description": "Optional shared ingredient name."}
+        "ingredient_name": {"name": "Generic ingredient", "description": "Optional shared ingredient name."},
+        "reorder_threshold": {"name": "Reorder threshold", "description": "Optional low-stock quantity threshold."}
       }
     },
     "update_product": {
@@ -28,9 +30,12 @@
         "name": {"name": "Name", "description": "New product name."},
         "brand": {"name": "Brand", "description": "New product brand."},
         "barcode": {"name": "Barcode", "description": "New unique barcode."},
+        "description": {"name": "Description", "description": "Product description."},
         "package_size": {"name": "Package size", "description": "New package size."},
         "package_unit": {"name": "Package unit", "description": "New package unit."},
-        "ingredient_name": {"name": "Generic ingredient", "description": "Shared ingredient name."}
+        "ingredient_name": {"name": "Generic ingredient", "description": "Shared ingredient name."},
+        "reorder_threshold": {"name": "Reorder threshold", "description": "Optional low-stock quantity threshold."},
+        "clear_fields": {"name": "Fields to clear", "description": "Optional fields to remove from this product."}
       }
     },
     "find_product": {

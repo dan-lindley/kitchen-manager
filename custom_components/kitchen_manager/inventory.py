@@ -85,9 +85,11 @@ class InventoryEngine:
         name: str,
         brand: str | None = None,
         barcode: str | None = None,
+        description: str | None = None,
         package_size: float | None = None,
         package_unit: str | None = None,
         ingredient_name: str | None = None,
+        reorder_threshold: float | None = None,
     ) -> dict[str, Any]:
         """Create a product and reuse or create its generic ingredient."""
         product = Product(
@@ -95,8 +97,10 @@ class InventoryEngine:
             name=name,
             brand=brand,
             barcode=barcode,
+            description=description,
             package_size=package_size,
             package_unit=package_unit,
+            reorder_threshold=reorder_threshold,
             data_source=DataSource.MANUAL,
         )
         if ingredient_name is not None:
@@ -152,9 +156,12 @@ class InventoryEngine:
         name: str | None = None,
         brand: str | None = None,
         barcode: str | None = None,
+        description: str | None = None,
         package_size: float | None = None,
         package_unit: str | None = None,
         ingredient_name: str | None = None,
+        reorder_threshold: float | None = None,
+        clear_fields: list[str] | None = None,
     ) -> dict[str, Any]:
         """Update product details without changing its inventory or history."""
         if all(
@@ -163,12 +170,42 @@ class InventoryEngine:
                 name,
                 brand,
                 barcode,
+                description,
                 package_size,
                 package_unit,
                 ingredient_name,
+                reorder_threshold,
             )
-        ):
+        ) and not clear_fields:
             raise InventoryError("At least one product field must be provided")
+        allowed_clear_fields = {
+            "brand",
+            "barcode",
+            "description",
+            "package",
+            "reorder_threshold",
+            "ingredient",
+        }
+        clear_fields = clear_fields or []
+        if (
+            not isinstance(clear_fields, list)
+            or any(
+                not isinstance(field, str) or field not in allowed_clear_fields
+                for field in clear_fields
+            )
+            or len(clear_fields) != len(set(clear_fields))
+        ):
+            raise InventoryError("clear_fields contains an unsupported field")
+        conflicting_fields = {
+            "brand": brand,
+            "barcode": barcode,
+            "description": description,
+            "package": package_size is not None or package_unit is not None,
+            "reorder_threshold": reorder_threshold,
+            "ingredient": ingredient_name,
+        }
+        if any(conflicting_fields[field] for field in clear_fields):
+            raise InventoryError("Do not provide a value for a field being cleared")
 
         def mutate(data: KitchenManagerData) -> tuple[dict[str, Any], bool]:
             product = data.products.get(product_id)
@@ -181,10 +218,27 @@ class InventoryEngine:
                 updated.brand = brand
             if barcode is not None:
                 updated.barcode = barcode
+            if description is not None:
+                updated.description = description
+            if "brand" in clear_fields:
+                updated.brand = None
+            if "barcode" in clear_fields:
+                updated.barcode = None
+            if "description" in clear_fields:
+                updated.description = None
             if package_size is not None:
                 updated.package_size = package_size
             if package_unit is not None:
                 updated.package_unit = package_unit
+            if "package" in clear_fields:
+                updated.package_size = None
+                updated.package_unit = None
+            if reorder_threshold is not None:
+                updated.reorder_threshold = reorder_threshold
+            if "reorder_threshold" in clear_fields:
+                updated.reorder_threshold = None
+            if "ingredient" in clear_fields:
+                updated.ingredient_id = None
             if ingredient_name is not None:
                 Ingredient(id="pending", name=ingredient_name)
                 normalized = ingredient_name.casefold()
@@ -255,6 +309,44 @@ class InventoryEngine:
             _product_dict(product)
             for product in self._find_products(self._storage.data, query)
         ]
+
+    def list_products(self, query: str | None = None) -> list[dict[str, Any]]:
+        """Return catalogue products with current stock and reorder status."""
+        data = self._storage.data
+        if query is None or not query.strip():
+            products = sorted(
+                data.products.values(), key=lambda item: item.name.casefold()
+            )
+        else:
+            products = self._find_products(data, query)
+        results = []
+        for product in products:
+            stock = sorted(
+                (
+                    item.to_dict()
+                    for item in data.inventory.values()
+                    if item.product_id == product.id
+                ),
+                key=lambda item: item["location"].value,
+            )
+            total_quantity = sum(item["quantity"] for item in stock)
+            threshold = product.reorder_threshold
+            results.append(
+                {
+                    "product": _product_dict(product),
+                    "ingredient_name": (
+                        data.ingredients[product.ingredient_id].name
+                        if product.ingredient_id is not None
+                        else None
+                    ),
+                    "stock": stock,
+                    "total_quantity": total_quantity,
+                    "low_stock": (
+                        threshold is not None and total_quantity < threshold
+                    ),
+                }
+            )
+        return results
 
     def _resolve_product(
         self,

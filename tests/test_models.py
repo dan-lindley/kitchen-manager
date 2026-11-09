@@ -24,6 +24,28 @@ def test_product_requires_package_size_and_unit_together() -> None:
         Product(id="tomatoes", name="Chopped tomatoes", package_size=400)
 
 
+def test_product_accepts_reorder_threshold_and_description() -> None:
+    """Keep optional household product metadata in the catalogue."""
+    product = Product(
+        id="milk",
+        name="Milk",
+        description="Whole milk",
+        reorder_threshold=2,
+    )
+
+    assert product.reorder_threshold == 2
+    assert product.description == "Whole milk"
+
+
+@pytest.mark.parametrize("threshold", [-1, float("nan"), float("inf"), True])
+def test_product_rejects_invalid_reorder_threshold(
+    threshold: float | bool,
+) -> None:
+    """Reject invalid optional low-stock values."""
+    with pytest.raises(ModelValidationError):
+        Product(id="milk", name="Milk", reorder_threshold=threshold)
+
+
 def test_inventory_rejects_negative_quantity() -> None:
     """Reject stock quantities below zero."""
     with pytest.raises(ModelValidationError, match="non-negative"):
@@ -139,7 +161,38 @@ def test_v1_data_migrates_and_preserves_saved_location() -> None:
         KitchenManagerData.inventory_key(product.id, StorageLocation.FRIDGE)
     ].location is StorageLocation.FRIDGE
     assert migrated.transactions == []
-    assert migrated.to_dict()["schema_version"] == 2
+    assert migrated.to_dict()["schema_version"] == 3
+
+
+def test_v2_data_migrates_with_optional_product_metadata() -> None:
+    """Preserve the complete Phase 2 inventory when adding product metadata."""
+    product = Product(id="milk", name="Milk", barcode="123")
+    item = InventoryItem(
+        product_id=product.id, quantity=2, unit="item", location=StorageLocation.FRIDGE
+    )
+    product_data = product.to_dict()
+    product_data.pop("description")
+    product_data.pop("reorder_threshold")
+    v2_data = {
+        "schema_version": 2,
+        "ingredients": {},
+        "products": {product.id: product_data},
+        "inventory": {
+            KitchenManagerData.inventory_key(product.id, item.location): item.to_dict()
+        },
+        "transactions": [],
+        "operations": {},
+    }
+
+    migrated = KitchenManagerData.from_dict(v2_data)
+
+    assert migrated.products[product.id].barcode == "123"
+    assert migrated.products[product.id].description is None
+    assert migrated.products[product.id].reorder_threshold is None
+    assert migrated.inventory[
+        KitchenManagerData.inventory_key(product.id, item.location)
+    ].quantity == 2
+    assert migrated.to_dict()["schema_version"] == 3
 
 
 def test_transaction_history_must_match_current_inventory() -> None:

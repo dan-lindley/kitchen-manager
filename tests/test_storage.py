@@ -84,7 +84,7 @@ async def test_v1_store_data_is_migrated_and_persisted(
     assert restored.inventory[inventory_key].quantity == 3
     assert restored.inventory[inventory_key].location is StorageLocation.OTHER
     assert persisted is not None
-    assert persisted["schema_version"] == 2
+    assert persisted["schema_version"] == 3
 
 
 async def test_concurrent_stock_updates_are_persisted_without_lost_writes(

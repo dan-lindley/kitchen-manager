@@ -147,9 +147,11 @@ class Product:
     name: str
     brand: str | None = None
     barcode: str | None = None
+    description: str | None = None
     package_size: float | None = None
     package_unit: str | None = None
     ingredient_id: str | None = None
+    reorder_threshold: float | None = None
     data_source: DataSource = DataSource.MANUAL
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
@@ -159,6 +161,9 @@ class Product:
         self.name = _validate_text(self.name, "product.name")
         self.brand = _validate_optional_text(self.brand, "product.brand")
         self.barcode = _validate_optional_text(self.barcode, "product.barcode")
+        self.description = _validate_optional_text(
+            self.description, "product.description"
+        )
         self.ingredient_id = _validate_optional_text(
             self.ingredient_id, "product.ingredient_id"
         )
@@ -172,6 +177,12 @@ class Product:
         self.package_unit = _validate_optional_text(
             self.package_unit, "product.package_unit"
         )
+        if self.reorder_threshold is not None:
+            self.reorder_threshold = _validate_number(
+                self.reorder_threshold,
+                "product.reorder_threshold",
+                allow_zero=True,
+            )
         if (self.package_size is None) != (self.package_unit is None):
             raise ModelValidationError(
                 "product.package_size and product.package_unit must be set together"
@@ -515,6 +526,8 @@ class KitchenManagerData:
             raise ModelValidationError("unsupported Kitchen Manager data version")
         if version == 1:
             return cls._migrate_v1_data(value)
+        if version == 2:
+            return cls._migrate_v2_data(value)
         if version != DATA_SCHEMA_VERSION:
             raise ModelValidationError(
                 f"unsupported Kitchen Manager data version: {version}"
@@ -596,6 +609,52 @@ class KitchenManagerData:
                 for key, item in value["products"].items()
             },
             inventory=migrated_inventory,
+        )
+        data.validate()
+        return data
+
+    @classmethod
+    def _migrate_v2_data(cls, value: dict[str, Any]) -> KitchenManagerData:
+        """Add optional product description and reorder threshold fields."""
+        expected_keys = {
+            "schema_version",
+            "ingredients",
+            "products",
+            "inventory",
+            "transactions",
+            "operations",
+        }
+        if set(value) != expected_keys:
+            raise ModelValidationError("version 2 data has an invalid shape")
+        for name in ("ingredients", "products", "inventory", "operations"):
+            collection = value[name]
+            if not isinstance(collection, dict):
+                raise ModelValidationError(f"{name} must be an object")
+            if not all(isinstance(key, str) for key in collection):
+                raise ModelValidationError(f"{name} keys must be strings")
+        if not isinstance(value["transactions"], list):
+            raise ModelValidationError("transactions must be a list")
+
+        data = cls(
+            ingredients={
+                key: Ingredient.from_dict(item)
+                for key, item in value["ingredients"].items()
+            },
+            products={
+                key: Product.from_dict(item)
+                for key, item in value["products"].items()
+            },
+            inventory={
+                key: InventoryItem.from_dict(item)
+                for key, item in value["inventory"].items()
+            },
+            transactions=[
+                StockTransaction.from_dict(item) for item in value["transactions"]
+            ],
+            operations={
+                key: OperationRecord.from_dict(item)
+                for key, item in value["operations"].items()
+            },
         )
         data.validate()
         return data
