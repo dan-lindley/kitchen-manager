@@ -4,7 +4,18 @@ A local-first Home Assistant custom integration for household food inventory
 and future meal planning. Kitchen Manager does not use Grocy, an external
 database, or Home Assistant's Recorder database.
 
-## Installation
+## HACS installation
+
+1. In Home Assistant, open **HACS → Integrations**.
+2. Open the top-right menu and select **Custom repositories**.
+3. Add `https://github.com/dan-lindley/kitchen-manager` and choose
+   **Integration** as the category.
+4. Find **Kitchen Manager** in HACS and download it.
+5. Restart Home Assistant.
+6. In **Settings → Devices & services**, select **Add integration**, search for
+   **Kitchen Manager**, and finish setup.
+
+## Manual installation
 
 1. Copy `custom_components/kitchen_manager` into the `custom_components`
    directory in your Home Assistant configuration directory. Create

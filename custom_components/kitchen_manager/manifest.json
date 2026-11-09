@@ -1,10 +1,12 @@
 {
   "domain": "kitchen_manager",
   "name": "Kitchen Manager",
-  "codeowners": [],
+  "codeowners": ["@dan-lindley"],
   "config_flow": true,
-  "iot_class": "calculated",
+  "documentation": "https://github.com/dan-lindley/kitchen-manager",
   "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/dan-lindley/kitchen-manager/issues",
   "single_config_entry": true,
   "version": "0.1.0"
 }
