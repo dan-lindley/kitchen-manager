@@ -1,0 +1,10 @@
+{
+  "domain": "kitchen_manager",
+  "name": "Kitchen Manager",
+  "codeowners": [],
+  "config_flow": true,
+  "iot_class": "calculated",
+  "integration_type": "service",
+  "single_config_entry": true,
+  "version": "0.1.0"
+}

@@ -1,0 +1,10 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Kitchen Manager",
+        "description": "Set up a local household food inventory. No external account is required."
+      }
+    }
+  }
+}
