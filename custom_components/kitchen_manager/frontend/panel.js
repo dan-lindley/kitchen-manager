@@ -5,10 +5,15 @@ class KitchenManagerPanel extends HTMLElement {
     this._hass = undefined;
     this._products = [];
     this._history = [];
+    this._locations = ["cupboard", "fridge", "freezer", "other"];
     this._search = "";
     this._loading = true;
     this._error = "";
     this._modal = null;
+  }
+
+  _locationOptions() {
+    return `<datalist id="storage-locations">${this._locations.map((location) => `<option value="${this._escape(location)}"></option>`).join("")}</datalist>`;
   }
 
   set hass(hass) {
@@ -44,6 +49,7 @@ class KitchenManagerPanel extends HTMLElement {
       ]);
       this._products = catalog.products;
       this._history = history.transactions;
+      this._locations = catalog.locations || this._locations;
     } catch (error) {
       this._error = error.message || "Kitchen Manager could not load its data.";
     } finally {
@@ -194,6 +200,7 @@ class KitchenManagerPanel extends HTMLElement {
     const meta = [
       product.package_size == null ? "" : `${this._number(product.package_size)} ${product.package_unit || ""}`,
       product.barcode ? `Barcode ${product.barcode}` : "",
+      `Default: ${product.default_storage_location}`,
       record.ingredient_name ? `Ingredient: ${record.ingredient_name}` : "",
       product.reorder_threshold == null ? "" : `Reorder below ${this._number(product.reorder_threshold)}`,
     ].filter(Boolean).join(" · ");
@@ -246,6 +253,9 @@ class KitchenManagerPanel extends HTMLElement {
             </div>
             <label for="reorder-threshold">Reorder below (optional)</label>
             <input id="reorder-threshold" name="reorder_threshold" type="number" min="0" step="any" value="${product?.reorder_threshold ?? ""}" placeholder="No threshold">
+              <label for="default-location">Default storage location</label>
+              <input id="default-location" name="default_storage_location" list="storage-locations" required maxlength="64" value="${this._escape(product?.default_storage_location || "cupboard")}">
+              ${this._locationOptions()}
               <label for="ingredient-name">Generic ingredient (optional)</label>
               <input id="ingredient-name" name="ingredient_name" value="${this._escape(this._modal.ingredientName || "")}" placeholder="For sharing recipes later">
               <label for="product-description">Description (optional)</label>
@@ -265,10 +275,9 @@ class KitchenManagerPanel extends HTMLElement {
         <form data-form="stock" data-product-id="${this._escape(this._modal.productId)}" data-operation="${operation}">
           <label for="stock-quantity">${operation === "set" ? "New quantity" : "Quantity"}</label>
           <input id="stock-quantity" name="quantity" type="number" min="${operation === "set" ? "0" : "0.000001"}" step="any" required>
-          <label for="stock-location">Storage location</label>
-          <select id="stock-location" name="location" required>
-            <option value="fridge">Fridge</option><option value="freezer">Freezer</option><option value="cupboard">Cupboard</option><option value="other">Other</option>
-          </select>
+          <label for="stock-location">Storage location override (optional)</label>
+          <input id="stock-location" name="location" list="storage-locations" maxlength="64" value="${operation === "consume" ? "" : this._escape(product?.default_storage_location || "cupboard")}" placeholder="${operation === "consume" ? "Leave blank if stock is in one location" : "Uses the product default"}">
+          ${this._locationOptions()}
           <div class="form-actions"><button class="secondary" type="button" data-action="close">Cancel</button><button type="submit">${operationLabel}</button></div>
         </form>
       </section>
@@ -336,7 +345,9 @@ class KitchenManagerPanel extends HTMLElement {
           operation: form.dataset.operation,
           product_id: form.dataset.productId,
           quantity: Number(data.get("quantity")),
-          location: String(data.get("location")),
+          ...(String(data.get("location") || "").trim()
+            ? { location: String(data.get("location")).trim() }
+            : {}),
         });
       } else {
         const fields = this._productFields(data, form.dataset.productId);
@@ -370,11 +381,15 @@ class KitchenManagerPanel extends HTMLElement {
     const description = String(data.get("description") || "").trim();
     const threshold = String(data.get("reorder_threshold") || "").trim();
     const ingredientName = String(data.get("ingredient_name") || "").trim();
+    const defaultLocation = String(data.get("default_storage_location") || "").trim();
+    if (!defaultLocation) {
+      throw new Error("Enter a default storage location.");
+    }
     if (Boolean(packageSize) !== Boolean(packageUnit)) {
       throw new Error("Enter both package size and package unit, or leave both blank.");
     }
-    const create = { name };
-    const update = { name, clear_fields: [] };
+    const create = { name, default_storage_location: defaultLocation };
+    const update = { name, default_storage_location: defaultLocation, clear_fields: [] };
     if (ingredientName) {
       create.ingredient_name = ingredientName;
       update.ingredient_name = ingredientName;

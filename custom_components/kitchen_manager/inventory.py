@@ -22,6 +22,7 @@ from .models import (
     StockTransaction,
     TransactionType,
     VerificationStatus,
+    validate_storage_location,
 )
 
 
@@ -59,12 +60,12 @@ def _quantity(value: Any, field: str, *, allow_zero: bool = False) -> float:
     return float(value)
 
 
-def _location(value: str) -> StorageLocation:
-    """Validate a storage location."""
+def _location(value: str) -> StorageLocation | str:
+    """Validate a standard or user-defined storage location."""
     try:
-        return StorageLocation(value)
-    except ValueError as err:
-        raise InventoryError(f"Unknown storage location: {value}") from err
+        return validate_storage_location(value)
+    except ModelValidationError as err:
+        raise InventoryError(str(err)) from err
 
 
 def _product_dict(product: Product) -> dict[str, Any]:
@@ -90,6 +91,7 @@ class InventoryEngine:
         package_unit: str | None = None,
         ingredient_name: str | None = None,
         reorder_threshold: float | None = None,
+        default_storage_location: str = "cupboard",
     ) -> dict[str, Any]:
         """Create a product and reuse or create its generic ingredient."""
         product = Product(
@@ -101,6 +103,7 @@ class InventoryEngine:
             package_size=package_size,
             package_unit=package_unit,
             reorder_threshold=reorder_threshold,
+            default_storage_location=_location(default_storage_location),
             data_source=DataSource.MANUAL,
         )
         if ingredient_name is not None:
@@ -161,6 +164,7 @@ class InventoryEngine:
         package_unit: str | None = None,
         ingredient_name: str | None = None,
         reorder_threshold: float | None = None,
+        default_storage_location: str | None = None,
         clear_fields: list[str] | None = None,
     ) -> dict[str, Any]:
         """Update product details without changing its inventory or history."""
@@ -175,6 +179,7 @@ class InventoryEngine:
                 package_unit,
                 ingredient_name,
                 reorder_threshold,
+                default_storage_location,
             )
         ) and not clear_fields:
             raise InventoryError("At least one product field must be provided")
@@ -203,6 +208,7 @@ class InventoryEngine:
             "package": package_size is not None or package_unit is not None,
             "reorder_threshold": reorder_threshold,
             "ingredient": ingredient_name,
+            "default_storage_location": default_storage_location,
         }
         if any(conflicting_fields[field] for field in clear_fields):
             raise InventoryError("Do not provide a value for a field being cleared")
@@ -235,6 +241,10 @@ class InventoryEngine:
                 updated.package_unit = None
             if reorder_threshold is not None:
                 updated.reorder_threshold = reorder_threshold
+            if default_storage_location is not None:
+                updated.default_storage_location = _location(
+                    default_storage_location
+                )
             if "reorder_threshold" in clear_fields:
                 updated.reorder_threshold = None
             if "ingredient" in clear_fields:
@@ -327,7 +337,7 @@ class InventoryEngine:
                     for item in data.inventory.values()
                     if item.product_id == product.id
                 ),
-                key=lambda item: item["location"].value,
+                key=lambda item: str(item["location"]),
             )
             total_quantity = sum(item["quantity"] for item in stock)
             threshold = product.reorder_threshold
@@ -347,6 +357,17 @@ class InventoryEngine:
                 }
             )
         return results
+
+    def list_locations(self) -> list[str]:
+        """Return standard and previously used product storage locations."""
+        locations = {location.value for location in StorageLocation}
+        data = self._storage.data
+        locations.update(
+            str(product.default_storage_location)
+            for product in data.products.values()
+        )
+        locations.update(str(item.location) for item in data.inventory.values())
+        return sorted(locations, key=str.casefold)
 
     def _resolve_product(
         self,
@@ -377,7 +398,7 @@ class InventoryEngine:
         product_id: str | None,
         barcode: str | None,
         quantity: float,
-        location: StorageLocation | None,
+        location: StorageLocation | str | None,
     ) -> str:
         """Create a stable request fingerprint for duplicate detection."""
         return json.dumps(
@@ -386,7 +407,7 @@ class InventoryEngine:
                 "product_id": product_id,
                 "barcode": barcode,
                 "quantity": quantity,
-                "location": location.value if location else None,
+                "location": str(location) if location is not None else None,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -407,8 +428,6 @@ class InventoryEngine:
             quantity, "quantity", allow_zero=operation is TransactionType.SET
         )
         requested_location = _location(location) if location is not None else None
-        if operation is not TransactionType.CONSUME and requested_location is None:
-            raise InventoryError(f"location is required for {operation.value} stock")
         if operation_id is not None and not operation_id.strip():
             raise InventoryError("operation_id must not be empty")
 
@@ -430,24 +449,29 @@ class InventoryEngine:
             )
             selected_location = requested_location
             if selected_location is None:
-                stocked_locations = [
-                    item
-                    for item in data.inventory.values()
-                    if item.product_id == product.id and item.quantity > 0
-                ]
-                if len(stocked_locations) > 1:
-                    locations = ", ".join(
-                        sorted(item.location.value for item in stocked_locations)
-                    )
-                    raise InventoryError(
-                        "Stock exists in multiple locations "
-                        f"({locations}); specify location"
-                    )
-                if not stocked_locations:
-                    raise InventoryError(
-                        f"Insufficient stock for {product.name}: no stock remains"
-                    )
-                selected_location = stocked_locations[0].location
+                if operation is not TransactionType.CONSUME:
+                    selected_location = product.default_storage_location
+                else:
+                    stocked_locations = [
+                        item
+                        for item in data.inventory.values()
+                        if item.product_id == product.id and item.quantity > 0
+                    ]
+                    if len(stocked_locations) > 1:
+                        locations = ", ".join(
+                            sorted(str(item.location) for item in stocked_locations)
+                        )
+                        raise InventoryError(
+                            "Stock exists in multiple locations "
+                            f"({locations}); specify location"
+                        )
+                    if not stocked_locations:
+                        raise InventoryError(
+                            f"Insufficient stock for {product.name}: no stock remains"
+                        )
+                    selected_location = stocked_locations[0].location
+
+            assert selected_location is not None
 
             key = data.inventory_key(product.id, selected_location)
             item = data.inventory.get(key)
@@ -461,7 +485,7 @@ class InventoryEngine:
                 if quantity > previous_quantity and not quantities_equal:
                     raise InventoryError(
                         f"Insufficient stock for {product.name} in "
-                        f"{selected_location.value}: {previous_quantity:g} available, "
+                        f"{selected_location}: {previous_quantity:g} available, "
                         f"{quantity:g} requested"
                     )
                 new_quantity = (
@@ -507,7 +531,7 @@ class InventoryEngine:
                 "product_name": product.name,
                 "quantity": new_quantity,
                 "unit": item.unit,
-                "location": selected_location.value,
+                "location": str(selected_location),
                 "transaction_id": transaction.id,
                 "operation_id": operation_id,
             }
@@ -551,12 +575,12 @@ class InventoryEngine:
                 item.to_dict()
                 for item in data.inventory.values()
                 if item.product_id == product.id
-                and (selected_location is None or item.location is selected_location)
+                and (selected_location is None or item.location == selected_location)
             ]
             result.append(
                 {
                     "product": _product_dict(product),
-                    "stock": sorted(stock, key=lambda item: item["location"].value),
+                    "stock": sorted(stock, key=lambda item: str(item["location"])),
                 }
             )
         return result
@@ -572,7 +596,7 @@ class InventoryEngine:
         for item in data.inventory.values():
             if item.quantity <= 0:
                 continue
-            if selected_location is not None and item.location is not selected_location:
+            if selected_location is not None and item.location != selected_location:
                 continue
             product = data.products[item.product_id]
             if needle and needle not in product.name.casefold():
@@ -582,7 +606,7 @@ class InventoryEngine:
                     "product": _product_dict(product),
                     "quantity": item.quantity,
                     "unit": item.unit,
-                    "location": item.location.value,
+                    "location": str(item.location),
                     "updated_at": item.updated_at,
                 }
             )

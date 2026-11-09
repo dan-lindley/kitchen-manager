@@ -147,6 +147,68 @@ async def test_product_update_can_clear_optional_fields(
     assert updated["reorder_threshold"] is None
 
 
+async def test_default_location_is_used_and_can_be_overridden(
+    engine: InventoryEngine,
+) -> None:
+    """Use a saved custom location for additions and honor one-off overrides."""
+    product = await _create_product(
+        engine,
+        name="Pasta",
+        default_storage_location="baking cupboard",
+    )
+    added = await engine.async_change_stock(
+        TransactionType.ADD,
+        product_id=product["id"],
+        quantity=2,
+    )
+    override = await engine.async_change_stock(
+        TransactionType.ADD,
+        product_id=product["id"],
+        quantity=1,
+        location="utility room",
+    )
+
+    assert added["location"] == "baking cupboard"
+    assert override["location"] == "utility room"
+    assert set(engine.list_locations()) >= {
+        "baking cupboard",
+        "utility room",
+    }
+
+
+async def test_default_location_can_be_changed_without_modifying_stock(
+    engine: InventoryEngine,
+) -> None:
+    """Changing the default affects future additions, not existing stock."""
+    product = await _create_product(
+        engine,
+        name="Milk",
+        default_storage_location="fridge",
+    )
+    first = await engine.async_change_stock(
+        TransactionType.ADD,
+        product_id=product["id"],
+        quantity=2,
+    )
+    await engine.async_update_product(
+        product_id=product["id"],
+        default_storage_location="garage fridge",
+    )
+    next_addition = await engine.async_change_stock(
+        TransactionType.ADD,
+        product_id=product["id"],
+        quantity=1,
+    )
+    stock = engine.get_stock(product_id=product["id"])[0]["stock"]
+
+    assert first["location"] == "fridge"
+    assert next_addition["location"] == "garage fridge"
+    assert {str(item["location"]) for item in stock} == {
+        "fridge",
+        "garage fridge",
+    }
+
+
 async def test_add_consume_and_insufficient_stock(engine: InventoryEngine) -> None:
     """Persist stock transactions and prevent negative inventory."""
     product = await _create_product(engine)

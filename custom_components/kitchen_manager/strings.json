@@ -19,7 +19,8 @@
         "package_size": {"name": "Package size", "description": "Optional package size."},
         "package_unit": {"name": "Package unit", "description": "Unit for package size."},
         "ingredient_name": {"name": "Generic ingredient", "description": "Optional shared ingredient name."},
-        "reorder_threshold": {"name": "Reorder threshold", "description": "Optional low-stock quantity threshold."}
+        "reorder_threshold": {"name": "Reorder threshold", "description": "Optional low-stock quantity threshold."},
+        "default_storage_location": {"name": "Default storage location", "description": "Location used for stock additions unless overridden."}
       }
     },
     "update_product": {
@@ -35,7 +36,8 @@
         "package_unit": {"name": "Package unit", "description": "New package unit."},
         "ingredient_name": {"name": "Generic ingredient", "description": "Shared ingredient name."},
         "reorder_threshold": {"name": "Reorder threshold", "description": "Optional low-stock quantity threshold."},
-        "clear_fields": {"name": "Fields to clear", "description": "Optional fields to remove from this product."}
+        "clear_fields": {"name": "Fields to clear", "description": "Optional fields to remove from this product."},
+        "default_storage_location": {"name": "Default storage location", "description": "Location used for stock additions unless overridden."}
       }
     },
     "find_product": {

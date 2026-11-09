@@ -6,8 +6,11 @@
   product creation/editing, stock changes, low-stock thresholds, and recent
   transaction history.
 - Added optional product descriptions and reorder thresholds.
-- Migrated stored schema version 2 to version 3 while preserving inventory and
+- Migrated stored schema version 3 to version 4 while preserving inventory and
   transaction records.
+- Added per-product default storage locations, custom location names, location
+  suggestions, and safe inference from existing stock during schema v4
+  migration.
 
 ## 0.2.0
 

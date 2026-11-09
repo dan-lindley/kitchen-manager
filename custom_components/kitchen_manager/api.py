@@ -65,7 +65,11 @@ async def websocket_catalog(
         products = _engine(hass).list_products(msg.get("search_term"))
     except (InventoryError, ModelValidationError) as err:
         _raise_user_error(err)
-    connection.send_result(msg["id"], {"products": products, "count": len(products)})
+    locations = _engine(hass).list_locations()
+    connection.send_result(
+        msg["id"],
+        {"products": products, "count": len(products), "locations": locations},
+    )
 
 
 @websocket_api.websocket_command(
@@ -79,6 +83,7 @@ async def websocket_catalog(
         vol.Optional("package_unit"): cv.string,
         vol.Optional("ingredient_name"): cv.string,
         vol.Optional("reorder_threshold"): vol.Any(int, float),
+        vol.Optional("default_storage_location"): cv.string,
     }
 )
 @websocket_api.async_response
@@ -112,6 +117,7 @@ async def websocket_create_product(
         vol.Optional("package_unit"): cv.string,
         vol.Optional("ingredient_name"): cv.string,
         vol.Optional("reorder_threshold"): vol.Any(int, float),
+        vol.Optional("default_storage_location"): cv.string,
         vol.Optional("clear_fields"): vol.All(
             cv.ensure_list, [vol.In(_CLEARABLE_FIELDS)]
         ),
@@ -144,9 +150,7 @@ async def websocket_update_product(
         ),
         vol.Required("product_id"): cv.string,
         vol.Required("quantity"): vol.Any(int, float),
-        vol.Optional("location"): vol.In(
-            ["fridge", "freezer", "cupboard", "other"]
-        ),
+        vol.Optional("location"): cv.string,
         vol.Optional("operation_id"): cv.string,
     }
 )

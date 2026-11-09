@@ -148,7 +148,18 @@ def test_v1_data_migrates_and_preserves_saved_location() -> None:
     old_data = {
         "schema_version": 1,
         "ingredients": {ingredient.id: ingredient.to_dict()},
-        "products": {product.id: product.to_dict()},
+        "products": {
+            product.id: {
+                key: value
+                for key, value in product.to_dict().items()
+                if key
+                not in {
+                    "description",
+                    "reorder_threshold",
+                    "default_storage_location",
+                }
+            }
+        },
         "inventory": {product.id: item.to_dict()},
     }
 
@@ -161,7 +172,11 @@ def test_v1_data_migrates_and_preserves_saved_location() -> None:
         KitchenManagerData.inventory_key(product.id, StorageLocation.FRIDGE)
     ].location is StorageLocation.FRIDGE
     assert migrated.transactions == []
-    assert migrated.to_dict()["schema_version"] == 3
+    assert migrated.to_dict()["schema_version"] == 4
+    assert (
+        migrated.products[product.id].default_storage_location
+        is StorageLocation.FRIDGE
+    )
 
 
 def test_v2_data_migrates_with_optional_product_metadata() -> None:
@@ -173,12 +188,15 @@ def test_v2_data_migrates_with_optional_product_metadata() -> None:
     product_data = product.to_dict()
     product_data.pop("description")
     product_data.pop("reorder_threshold")
+    product_data.pop("default_storage_location")
     v2_data = {
         "schema_version": 2,
         "ingredients": {},
         "products": {product.id: product_data},
         "inventory": {
-            KitchenManagerData.inventory_key(product.id, item.location): item.to_dict()
+            KitchenManagerData.inventory_key(
+                product.id, item.location
+            ): item.to_dict()
         },
         "transactions": [],
         "operations": {},
@@ -192,7 +210,90 @@ def test_v2_data_migrates_with_optional_product_metadata() -> None:
     assert migrated.inventory[
         KitchenManagerData.inventory_key(product.id, item.location)
     ].quantity == 2
-    assert migrated.to_dict()["schema_version"] == 3
+    assert migrated.to_dict()["schema_version"] == 4
+    assert (
+        migrated.products[product.id].default_storage_location
+        is StorageLocation.FRIDGE
+    )
+
+
+def test_v3_migration_infers_largest_stock_location_without_changing_records() -> None:
+    """Choose the product default from the largest legacy stock location."""
+    product = Product(id="milk", name="Milk")
+    fridge = InventoryItem(
+        product_id=product.id, quantity=2, unit="item", location="fridge"
+    )
+    pantry = InventoryItem(
+        product_id=product.id, quantity=5, unit="item", location="pantry"
+    )
+    transactions = [
+        StockTransaction(
+            id="fridge-stock",
+            product_id=product.id,
+            operation=TransactionType.ADD,
+            quantity_changed=2,
+            previous_quantity=0,
+            new_quantity=2,
+            location="fridge",
+        ),
+        StockTransaction(
+            id="pantry-stock",
+            product_id=product.id,
+            operation=TransactionType.ADD,
+            quantity_changed=5,
+            previous_quantity=0,
+            new_quantity=5,
+            location="pantry",
+        ),
+    ]
+    product_data = product.to_dict()
+    product_data.pop("default_storage_location")
+    v3_data = {
+        "schema_version": 3,
+        "ingredients": {},
+        "products": {product.id: product_data},
+        "inventory": {
+            KitchenManagerData.inventory_key(
+                product.id, fridge.location
+            ): fridge.to_dict(),
+            KitchenManagerData.inventory_key(
+                product.id, pantry.location
+            ): pantry.to_dict(),
+        },
+        "transactions": [item.to_dict() for item in transactions],
+        "operations": {},
+    }
+
+    migrated = KitchenManagerData.from_dict(v3_data)
+
+    assert migrated.products[product.id].default_storage_location == "pantry"
+    assert migrated.inventory[
+        KitchenManagerData.inventory_key(product.id, "fridge")
+    ].quantity == 2
+    assert migrated.inventory[
+        KitchenManagerData.inventory_key(product.id, "pantry")
+    ].quantity == 5
+    assert {item.id for item in migrated.transactions} == {
+        "fridge-stock",
+        "pantry-stock",
+    }
+    assert migrated.to_dict()["schema_version"] == 4
+
+
+def test_product_supports_custom_storage_location() -> None:
+    """Allow a household-specific location as a default and inventory location."""
+    product = Product(
+        id="pasta", name="Pasta", default_storage_location="baking cupboard"
+    )
+    stock = InventoryItem(
+        product_id=product.id,
+        quantity=1,
+        unit="item",
+        location="baking cupboard",
+    )
+
+    assert product.default_storage_location == "baking cupboard"
+    assert stock.location == "baking cupboard"
 
 
 def test_transaction_history_must_match_current_inventory() -> None:

@@ -34,6 +34,12 @@ create_product:
       example: Chopped tomatoes
       selector:
         text:
+    default_storage_location:
+      default: cupboard
+      example: pantry
+      selector:
+        text:
+          multiple: false
     reorder_threshold:
       example: 2
       selector:
@@ -74,6 +80,11 @@ update_product:
     ingredient_name:
       selector:
         text:
+    default_storage_location:
+      example: fridge
+      selector:
+        text:
+          multiple: false
     reorder_threshold:
       selector:
         number:
@@ -103,7 +114,7 @@ find_product:
         text:
 add_stock:
   name: Add stock
-  description: Add stock to one storage location.
+  description: Add stock to the product default location or a one-off override.
   fields:
     product_id:
       example: 13c6bcedf06d4d6990c22789f975d420
@@ -122,21 +133,17 @@ add_stock:
           step: any
           mode: box
     location:
-      required: true
+      description: Optional override; defaults to the product storage location.
       selector:
-        select:
-          options:
-            - fridge
-            - freezer
-            - cupboard
-            - other
+        text:
+          multiple: false
     operation_id:
       example: grocery-delivery-2026-11-09-milk
       selector:
         text:
 consume_stock:
   name: Consume stock
-  description: Consume stock. If location is omitted, stock must exist in only one location.
+  description: Consume stock; when omitted, stock must exist in only one location.
   fields:
     product_id:
       selector:
@@ -153,19 +160,16 @@ consume_stock:
           step: any
           mode: box
     location:
+      description: Required when stock exists in more than one location.
       selector:
-        select:
-          options:
-            - fridge
-            - freezer
-            - cupboard
-            - other
+        text:
+          multiple: false
     operation_id:
       selector:
         text:
 set_stock:
   name: Set stock
-  description: Set the exact stock quantity at one storage location.
+  description: Set quantity at the product default location or an override.
   fields:
     product_id:
       selector:
@@ -182,14 +186,10 @@ set_stock:
           step: any
           mode: box
     location:
-      required: true
+      description: Optional override; defaults to the product storage location.
       selector:
-        select:
-          options:
-            - fridge
-            - freezer
-            - cupboard
-            - other
+        text:
+          multiple: false
     operation_id:
       selector:
         text:
@@ -208,24 +208,16 @@ get_stock:
         text:
     location:
       selector:
-        select:
-          options:
-            - fridge
-            - freezer
-            - cupboard
-            - other
+        text:
+          multiple: false
 list_inventory:
   name: List inventory
   description: List positive stock with optional location and product-name filters.
   fields:
     location:
       selector:
-        select:
-          options:
-            - fridge
-            - freezer
-            - cupboard
-            - other
+        text:
+          multiple: false
     product_name:
       selector:
         text:

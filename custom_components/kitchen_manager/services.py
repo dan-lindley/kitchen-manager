@@ -22,7 +22,7 @@ from .const import DEFAULT_HISTORY_LIMIT, DOMAIN
 from .inventory import InventoryEngine, InventoryError
 from .models import ModelValidationError, TransactionType
 
-_LOCATION_SCHEMA = vol.Any("fridge", "freezer", "cupboard", "other")
+_LOCATION_SCHEMA = cv.string
 _PRODUCT_SELECTOR = {
     vol.Optional("product_id"): cv.string,
     vol.Optional("barcode"): cv.string,
@@ -44,6 +44,7 @@ CREATE_PRODUCT_SCHEMA = vol.Schema(
         vol.Optional("package_unit"): cv.string,
         vol.Optional("ingredient_name"): cv.string,
         vol.Optional("reorder_threshold"): vol.Any(int, float),
+        vol.Optional("default_storage_location"): cv.string,
     }
 )
 UPDATE_PRODUCT_SCHEMA = vol.Schema(
@@ -57,6 +58,7 @@ UPDATE_PRODUCT_SCHEMA = vol.Schema(
         vol.Optional("package_unit"): cv.string,
         vol.Optional("ingredient_name"): cv.string,
         vol.Optional("reorder_threshold"): vol.Any(int, float),
+        vol.Optional("default_storage_location"): cv.string,
         vol.Optional("clear_fields"): [cv.string],
     }
 )
@@ -66,14 +68,6 @@ FIND_PRODUCT_SCHEMA = vol.Schema(
     }
 )
 STOCK_CHANGE_SCHEMA = vol.Schema(_STOCK_CHANGE_FIELDS)
-STOCK_CHANGE_REQUIRED_LOCATION_SCHEMA = vol.Schema(
-    {
-        **_PRODUCT_SELECTOR,
-        vol.Required("quantity"): vol.Any(int, float),
-        vol.Required("location"): _LOCATION_SCHEMA,
-        vol.Optional("operation_id"): cv.string,
-    }
-)
 GET_STOCK_SCHEMA = vol.Schema(
     {
         vol.Optional("product_id"): cv.string,
@@ -211,13 +205,13 @@ def async_setup_services(hass: HomeAssistant) -> None:
         (
             "add_stock",
             stock_action(TransactionType.ADD),
-            STOCK_CHANGE_REQUIRED_LOCATION_SCHEMA,
+            STOCK_CHANGE_SCHEMA,
         ),
         ("consume_stock", stock_action(TransactionType.CONSUME), STOCK_CHANGE_SCHEMA),
         (
             "set_stock",
             stock_action(TransactionType.SET),
-            STOCK_CHANGE_REQUIRED_LOCATION_SCHEMA,
+            STOCK_CHANGE_SCHEMA,
         ),
         ("get_stock", get_stock, GET_STOCK_SCHEMA),
         ("list_inventory", list_inventory, LIST_INVENTORY_SCHEMA),

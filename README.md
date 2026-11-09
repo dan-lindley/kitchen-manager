@@ -19,11 +19,19 @@ The current panel supports:
 - Viewing stock across storage locations, adding stock, consuming stock, and
   correcting quantities.
 - Reviewing the latest 30 stock transactions.
+- Saving a default location per product and using it automatically for stock
+  additions and corrections. A one-off location can be entered as an override.
 
 Products below their optional reorder threshold are highlighted, including
 products with no stock. The panel does not expose a public inventory endpoint.
 It registers one sidebar panel for the single Kitchen Manager config entry and
 removes the panel when that entry unloads.
+
+Storage locations include fridge, freezer, cupboard, and other, and can also
+be household-defined values such as `pantry` or `garage fridge`. Previously
+used locations are suggested in the product and stock forms. For consumption,
+leaving location blank retains the existing safe behavior: stock must be in
+only one location, otherwise the user must choose one.
 
 ## Installation
 
@@ -50,12 +58,12 @@ product's package-size metadata is descriptive and is not multiplied into stock.
 
 | Action | Required inputs | Optional inputs | Response |
 | --- | --- | --- | --- |
-| `kitchen_manager.create_product` | `name` | `brand`, `barcode`, `description`, `package_size`, `package_unit`, `ingredient_name`, `reorder_threshold` | `product` |
-| `kitchen_manager.update_product` | `product_id` | Product fields to update, `clear_fields` | `product` |
+| `kitchen_manager.create_product` | `name` | `brand`, `barcode`, `description`, `package_size`, `package_unit`, `ingredient_name`, `reorder_threshold`, `default_storage_location` | `product` |
+| `kitchen_manager.update_product` | `product_id` | Product fields to update, `clear_fields`, `default_storage_location` | `product` |
 | `kitchen_manager.find_product` | `search_term` | — | `products`, `count` |
-| `kitchen_manager.add_stock` | `product_id` **or** `barcode`, `quantity`, `location` | `operation_id` | Updated product/location quantity and transaction ID |
+| `kitchen_manager.add_stock` | `product_id` **or** `barcode`, `quantity` | `location` override, `operation_id` | Updated product/location quantity and transaction ID |
 | `kitchen_manager.consume_stock` | `product_id` **or** `barcode`, `quantity` | `location`, `operation_id` | Updated product/location quantity and transaction ID |
-| `kitchen_manager.set_stock` | `product_id` **or** `barcode`, `quantity`, `location` | `operation_id` | Updated product/location quantity and transaction ID |
+| `kitchen_manager.set_stock` | `product_id` **or** `barcode`, `quantity` | `location` override, `operation_id` | Updated product/location quantity and transaction ID |
 | `kitchen_manager.get_stock` | Exactly one of `product_id`, `barcode`, `search_term` | `location` | `products`, `count` |
 | `kitchen_manager.list_inventory` | — | `location`, `product_name` | Positive-stock `inventory`, `count` |
 | `kitchen_manager.get_stock_history` | — | `product_id`, `barcode`, `limit` (default 50, max 200) | Newest-first `transactions`, `count` |
@@ -78,6 +86,7 @@ sequence:
       package_size: 2
       package_unit: L
       ingredient_name: Milk
+      default_storage_location: fridge
     response_variable: created
 ```
 
@@ -89,7 +98,6 @@ sequence:
     data:
       product_id: "{{ created.product.id }}"
       quantity: 2
-      location: fridge
       operation_id: milk-delivery-2026-11-09
     response_variable: stock_change
 ```
@@ -162,11 +170,13 @@ serialized so concurrent requests cannot overwrite one another. Home
 Assistant's configuration backups include this storage; include Home Assistant
 settings in backups.
 
-Version 1 data from Kitchen Manager 0.1.0 and version 2 data from 0.2.0 are
-migrated automatically. Existing product, inventory, and transaction IDs and
-stock are preserved. The new description and reorder threshold fields are
-optional and default to empty for existing products. Version 1 stock retains
-its saved location (or defaults to `other` if no location was saved), and its
+Version 1 data from Kitchen Manager 0.1.0, version 2 data from 0.2.0, and
+version 3 data from the sidebar-panel checkpoint are migrated automatically.
+Existing product, inventory, and transaction IDs and stock are preserved.
+Default product locations are inferred from the largest positive stock
+location when possible, and otherwise default to `cupboard`. The description
+and reorder-threshold fields remain optional. Version 1 stock retains its
+saved location (or defaults to `other` if no location was saved), and its
 transaction history starts empty because that version did not record
 transactions. No history is automatically deleted.
 

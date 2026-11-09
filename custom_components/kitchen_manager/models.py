@@ -108,6 +108,24 @@ def _validate_enum[T: StrEnum](enum_type: type[T], value: Any, field_name: str) 
         raise ModelValidationError(f"{field_name} has an unsupported value") from err
 
 
+def validate_storage_location(
+    value: Any, field_name: str = "location"
+) -> StorageLocation | str:
+    """Validate a standard or user-defined storage location."""
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ModelValidationError(
+            f"{field_name} must be a non-empty trimmed string"
+        )
+    if len(value) > 64 or any(ord(char) < 32 for char in value):
+        raise ModelValidationError(
+            f"{field_name} must be at most 64 printable characters"
+        )
+    try:
+        return StorageLocation(value)
+    except ValueError:
+        return value
+
+
 @dataclass(slots=True)
 class Ingredient:
     """A generic ingredient shared by multiple commercial products."""
@@ -152,6 +170,7 @@ class Product:
     package_unit: str | None = None
     ingredient_id: str | None = None
     reorder_threshold: float | None = None
+    default_storage_location: StorageLocation | str = StorageLocation.CUPBOARD
     data_source: DataSource = DataSource.MANUAL
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
@@ -183,6 +202,10 @@ class Product:
                 "product.reorder_threshold",
                 allow_zero=True,
             )
+        self.default_storage_location = validate_storage_location(
+            self.default_storage_location,
+            "product.default_storage_location",
+        )
         if (self.package_size is None) != (self.package_unit is None):
             raise ModelValidationError(
                 "product.package_size and product.package_unit must be set together"
@@ -213,7 +236,7 @@ class InventoryItem:
     product_id: str
     quantity: float
     unit: str
-    location: StorageLocation = StorageLocation.OTHER
+    location: StorageLocation | str = StorageLocation.OTHER
     verification_status: VerificationStatus = VerificationStatus.UNVERIFIED
     updated_at: str = field(default_factory=_now)
 
@@ -223,8 +246,8 @@ class InventoryItem:
             self.quantity, "inventory.quantity", allow_zero=True
         )
         self.unit = _validate_text(self.unit, "inventory.unit")
-        self.location = _validate_enum(
-            StorageLocation, self.location, "inventory.location"
+        self.location = validate_storage_location(
+            self.location, "inventory.location"
         )
         self.verification_status = _validate_enum(
             VerificationStatus,
@@ -260,7 +283,7 @@ class StockTransaction:
     quantity_changed: float
     previous_quantity: float
     new_quantity: float
-    location: StorageLocation
+    location: StorageLocation | str
     timestamp: str = field(default_factory=_now)
     operation_id: str | None = None
 
@@ -293,8 +316,8 @@ class StockTransaction:
         self.new_quantity = _validate_number(
             self.new_quantity, "transaction.new_quantity", allow_zero=True
         )
-        self.location = _validate_enum(
-            StorageLocation, self.location, "transaction.location"
+        self.location = validate_storage_location(
+            self.location, "transaction.location"
         )
         self.timestamp = _validate_timestamp(self.timestamp, "transaction.timestamp")
         self.operation_id = _validate_optional_text(
@@ -375,9 +398,9 @@ class KitchenManagerData:
     operations: dict[str, OperationRecord] = field(default_factory=dict)
 
     @staticmethod
-    def inventory_key(product_id: str, location: StorageLocation) -> str:
+    def inventory_key(product_id: str, location: StorageLocation | str) -> str:
         """Return the stable key for one product at one storage location."""
-        return f"{product_id}::{location.value}"
+        return f"{product_id}::{location}"
 
     def validate(self) -> None:
         """Validate record keys, references, and unique barcodes."""
@@ -490,7 +513,7 @@ class KitchenManagerData:
                 or transaction.operation_id != operation_id
                 or operation.result.get("product_id") != transaction.product_id
                 or operation.result.get("quantity") != transaction.new_quantity
-                or operation.result.get("location") != transaction.location.value
+                or operation.result.get("location") != str(transaction.location)
             ):
                 raise ModelValidationError(
                     "operation record does not match its stock transaction"
@@ -528,6 +551,8 @@ class KitchenManagerData:
             return cls._migrate_v1_data(value)
         if version == 2:
             return cls._migrate_v2_data(value)
+        if version == 3:
+            return cls._migrate_v3_data(value)
         if version != DATA_SCHEMA_VERSION:
             raise ModelValidationError(
                 f"unsupported Kitchen Manager data version: {version}"
@@ -610,6 +635,7 @@ class KitchenManagerData:
             },
             inventory=migrated_inventory,
         )
+        cls._infer_default_locations(data)
         data.validate()
         return data
 
@@ -656,5 +682,101 @@ class KitchenManagerData:
                 for key, item in value["operations"].items()
             },
         )
+        cls._infer_default_locations(data)
         data.validate()
         return data
+
+    @classmethod
+    def _migrate_v3_data(cls, value: dict[str, Any]) -> KitchenManagerData:
+        """Add a product default location without changing inventory records."""
+        expected_keys = {
+            "schema_version",
+            "ingredients",
+            "products",
+            "inventory",
+            "transactions",
+            "operations",
+        }
+        if set(value) != expected_keys:
+            raise ModelValidationError("version 3 data has an invalid shape")
+        for name in ("ingredients", "products", "inventory", "operations"):
+            collection = value[name]
+            if not isinstance(collection, dict):
+                raise ModelValidationError(f"{name} must be an object")
+            if not all(isinstance(key, str) for key in collection):
+                raise ModelValidationError(f"{name} keys must be strings")
+        if not isinstance(value["transactions"], list):
+            raise ModelValidationError("transactions must be a list")
+        product_records = {}
+        for key, raw_product in value["products"].items():
+            if not isinstance(raw_product, dict):
+                raise ModelValidationError("product must be an object")
+            product_value = dict(raw_product)
+            product_value["default_storage_location"] = StorageLocation.CUPBOARD
+            product_records[key] = Product.from_dict(product_value)
+        data = cls(
+            ingredients={
+                key: Ingredient.from_dict(item)
+                for key, item in value["ingredients"].items()
+            },
+            products=product_records,
+            inventory={
+                key: InventoryItem.from_dict(item)
+                for key, item in value["inventory"].items()
+            },
+            transactions=[
+                StockTransaction.from_dict(item) for item in value["transactions"]
+            ],
+            operations={
+                key: OperationRecord.from_dict(item)
+                for key, item in value["operations"].items()
+            },
+        )
+        cls._infer_default_locations(data)
+        data.validate()
+        return data
+
+    @staticmethod
+    def _infer_default_locations(data: KitchenManagerData) -> None:
+        """Choose each product's largest existing stock location when available."""
+        totals: dict[str, dict[str, float]] = {}
+        for item in data.inventory.values():
+            if item.quantity <= 0:
+                continue
+            locations = totals.setdefault(item.product_id, {})
+            location = str(item.location)
+            locations[location] = locations.get(location, 0) + item.quantity
+        for product_id, product in data.products.items():
+            if locations := totals.get(product_id):
+                product.default_storage_location = validate_storage_location(
+                    max(
+                        locations,
+                        key=lambda location: (locations[location], location),
+                    ),
+                    "product.default_storage_location",
+                )
+                continue
+            existing_items = [
+                item
+                for item in data.inventory.values()
+                if item.product_id == product_id
+            ]
+            if existing_items:
+                product.default_storage_location = validate_storage_location(
+                    max(existing_items, key=lambda item: item.updated_at).location,
+                    "product.default_storage_location",
+                )
+                continue
+            existing_transactions = [
+                item
+                for item in data.transactions
+                if item.product_id == product_id
+            ]
+            if existing_transactions:
+                product.default_storage_location = validate_storage_location(
+                    max(
+                        existing_transactions,
+                        key=lambda item: item.timestamp,
+                    ).location,
+                    "product.default_storage_location",
+                )
