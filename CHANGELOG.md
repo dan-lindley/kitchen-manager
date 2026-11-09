@@ -1,16 +1,22 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Added the authenticated Kitchen Manager sidebar panel for catalogue search,
   product creation/editing, stock changes, low-stock thresholds, and recent
   transaction history.
 - Added optional product descriptions and reorder thresholds.
-- Migrated stored schema version 3 to version 4 while preserving inventory and
-  transaction records.
 - Added per-product default storage locations, custom location names, location
   suggestions, and safe inference from existing stock during schema v4
   migration.
+- Added persistent meal create, edit, delete, weekday eligibility, optional
+  catalogue-product ingredients, and cooking instructions.
+- Added a four-week Monday-to-Sunday planner with fixed assignments, saved
+  random suggestions, per-day shuffle, and explicit unplanned dates.
+- Added weekly, every-two-week, and every-four-week recurrence with date-level
+  overrides and migration from stored schema version 4.
+- Added Meals and Shopping navigation; Shopping shows configured low-stock
+  suggestions without changing inventory behavior.
 
 ## 0.2.0
 

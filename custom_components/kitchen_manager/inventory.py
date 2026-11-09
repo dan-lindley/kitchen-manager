@@ -80,6 +80,11 @@ class InventoryEngine:
         """Initialize the inventory engine."""
         self._storage = storage
 
+    @property
+    def storage(self) -> InventoryStorage:
+        """Expose the shared storage for companion data services."""
+        return self._storage
+
     async def async_create_product(
         self,
         *,

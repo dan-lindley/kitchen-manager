@@ -172,7 +172,7 @@ def test_v1_data_migrates_and_preserves_saved_location() -> None:
         KitchenManagerData.inventory_key(product.id, StorageLocation.FRIDGE)
     ].location is StorageLocation.FRIDGE
     assert migrated.transactions == []
-    assert migrated.to_dict()["schema_version"] == 4
+    assert migrated.to_dict()["schema_version"] == 5
     assert (
         migrated.products[product.id].default_storage_location
         is StorageLocation.FRIDGE
@@ -210,7 +210,7 @@ def test_v2_data_migrates_with_optional_product_metadata() -> None:
     assert migrated.inventory[
         KitchenManagerData.inventory_key(product.id, item.location)
     ].quantity == 2
-    assert migrated.to_dict()["schema_version"] == 4
+    assert migrated.to_dict()["schema_version"] == 5
     assert (
         migrated.products[product.id].default_storage_location
         is StorageLocation.FRIDGE
@@ -277,7 +277,7 @@ def test_v3_migration_infers_largest_stock_location_without_changing_records() -
         "fridge-stock",
         "pantry-stock",
     }
-    assert migrated.to_dict()["schema_version"] == 4
+    assert migrated.to_dict()["schema_version"] == 5
 
 
 def test_product_supports_custom_storage_location() -> None:

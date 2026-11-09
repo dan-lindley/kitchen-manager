@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 import math
 from typing import Any
@@ -47,15 +47,36 @@ class TransactionType(StrEnum):
     SET = "set"
 
 
+class MealEffort(StrEnum):
+    """Preparation effort required for a meal."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class PlannerMode(StrEnum):
+    """How a planner date received its meal assignment."""
+
+    FIXED = "fixed"
+    RANDOM = "random"
+    UNPLANNED = "unplanned"
+    OVERRIDE = "override"
+
+
 def _now() -> str:
     """Return a timezone-aware timestamp."""
     return datetime.now(UTC).isoformat()
 
 
-def _validate_text(value: Any, field_name: str) -> str:
+def _validate_text(
+    value: Any, field_name: str, *, maximum: int | None = None
+) -> str:
     """Validate a required, trimmed string."""
     if not isinstance(value, str) or not value or value != value.strip():
         raise ModelValidationError(f"{field_name} must be a non-empty trimmed string")
+    if maximum is not None and len(value) > maximum:
+        raise ModelValidationError(f"{field_name} must be at most {maximum} characters")
     return value
 
 
@@ -75,6 +96,25 @@ def _validate_timestamp(value: Any, field_name: str) -> str:
         raise ModelValidationError(f"{field_name} must be an ISO timestamp") from err
     if timestamp.utcoffset() is None:
         raise ModelValidationError(f"{field_name} must include a timezone")
+    return value
+
+
+def _validate_date(value: Any, field_name: str) -> str:
+    """Validate an ISO calendar date."""
+    value = _validate_text(value, field_name)
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as err:
+        raise ModelValidationError(f"{field_name} must be an ISO date") from err
+    if parsed.isoformat() != value:
+        raise ModelValidationError(f"{field_name} must be an ISO date")
+    return value
+
+
+def _validate_weekday(value: Any, field_name: str) -> int:
+    """Validate a Monday-zero weekday integer."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 6:
+        raise ModelValidationError(f"{field_name} must be a weekday from 0 to 6")
     return value
 
 
@@ -388,6 +428,211 @@ class OperationRecord:
 
 
 @dataclass(slots=True)
+class MealIngredient:
+    """A measured reference to a catalogue product used by a meal."""
+
+    product_id: str
+    quantity: float
+    unit: str | None = None
+
+    def validate(self) -> None:
+        _validate_text(self.product_id, "meal ingredient product_id")
+        _validate_number(self.quantity, "meal ingredient quantity", allow_zero=False)
+        if self.unit is not None:
+            _validate_text(self.unit, "meal ingredient unit", maximum=32)
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Any) -> MealIngredient:
+        if not isinstance(value, dict) or set(value) != {"product_id", "quantity", "unit"}:
+            raise ModelValidationError("meal ingredient has an invalid shape")
+        ingredient = cls(**value)
+        ingredient.validate()
+        return ingredient
+
+
+@dataclass(slots=True)
+class Meal:
+    """A household recipe independent of current inventory quantities."""
+
+    id: str
+    name: str
+    effort: MealEffort
+    time_minutes: int
+    eligible_weekdays: list[int] = field(default_factory=lambda: list(range(7)))
+    ingredients: list[MealIngredient] = field(default_factory=list)
+    instructions: str | None = None
+    created_at: str = field(default_factory=_now)
+    updated_at: str = field(default_factory=_now)
+
+    def validate(self) -> None:
+        _validate_text(self.id, "meal id")
+        _validate_text(self.name, "meal name", maximum=200)
+        try:
+            self.effort = MealEffort(self.effort)
+        except (ValueError, TypeError) as err:
+            raise ModelValidationError("meal effort must be low, medium, or high") from err
+        if (
+            isinstance(self.time_minutes, bool)
+            or not isinstance(self.time_minutes, int)
+            or self.time_minutes < 0
+        ):
+            raise ModelValidationError("meal time_minutes must be a non-negative integer")
+        if not isinstance(self.eligible_weekdays, list) or not self.eligible_weekdays:
+            raise ModelValidationError("meal must have at least one eligible weekday")
+        weekdays = [_validate_weekday(day, "meal eligible weekday") for day in self.eligible_weekdays]
+        if len(set(weekdays)) != len(weekdays):
+            raise ModelValidationError("meal eligible weekdays must be unique")
+        self.eligible_weekdays = sorted(weekdays)
+        if not isinstance(self.ingredients, list):
+            raise ModelValidationError("meal ingredients must be a list")
+        for ingredient in self.ingredients:
+            ingredient.validate()
+        if self.instructions is not None:
+            _validate_text(self.instructions, "meal instructions", maximum=20000)
+        _validate_timestamp(self.created_at, "meal created_at")
+        _validate_timestamp(self.updated_at, "meal updated_at")
+        _validate_timestamp_order(self.created_at, self.updated_at, "meal")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "id": self.id,
+            "name": self.name,
+            "effort": str(self.effort),
+            "time_minutes": self.time_minutes,
+            "eligible_weekdays": self.eligible_weekdays,
+            "ingredients": [item.to_dict() for item in self.ingredients],
+            "instructions": self.instructions,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> Meal:
+        expected = {
+            "id", "name", "effort", "time_minutes", "eligible_weekdays",
+            "ingredients", "instructions", "created_at", "updated_at",
+        }
+        if not isinstance(value, dict) or set(value) != expected:
+            raise ModelValidationError("meal has an invalid shape")
+        try:
+            effort = MealEffort(value["effort"])
+        except (ValueError, TypeError) as err:
+            raise ModelValidationError("meal effort must be low, medium, or high") from err
+        if not isinstance(value["ingredients"], list):
+            raise ModelValidationError("meal ingredients must be a list")
+        if not isinstance(value["eligible_weekdays"], list):
+            raise ModelValidationError("meal eligible weekdays must be a list")
+        meal = cls(
+            id=value["id"], name=value["name"], effort=effort,
+            time_minutes=value["time_minutes"],
+            eligible_weekdays=value["eligible_weekdays"],
+            ingredients=[MealIngredient.from_dict(item) for item in value["ingredients"]],
+            instructions=value["instructions"], created_at=value["created_at"],
+            updated_at=value["updated_at"],
+        )
+        meal.validate()
+        return meal
+
+
+@dataclass(slots=True)
+class RecurrenceRule:
+    """A simple weekly, fortnightly, or four-week meal recurrence."""
+
+    meal_id: str
+    weekday: int
+    interval_weeks: int
+    anchor_date: str
+
+    def validate(self) -> None:
+        _validate_text(self.meal_id, "recurrence meal_id")
+        _validate_weekday(self.weekday, "recurrence weekday")
+        if (
+            isinstance(self.interval_weeks, bool)
+            or self.interval_weeks not in (1, 2, 4)
+        ):
+            raise ModelValidationError("recurrence interval must be 1, 2, or 4 weeks")
+        _validate_date(self.anchor_date, "recurrence anchor_date")
+        if date.fromisoformat(self.anchor_date).weekday() != self.weekday:
+            raise ModelValidationError("recurrence anchor date must match its weekday")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Any) -> RecurrenceRule:
+        if not isinstance(value, dict) or set(value) != {
+            "meal_id", "weekday", "interval_weeks", "anchor_date"
+        }:
+            raise ModelValidationError("recurrence rule has an invalid shape")
+        rule = cls(**value)
+        rule.validate()
+        return rule
+
+
+@dataclass(slots=True)
+class PlannerEntry:
+    """A persisted choice or override for one calendar date."""
+
+    date: str
+    mode: PlannerMode
+    meal_id: str | None
+    meal_name: str | None
+    updated_at: str = field(default_factory=_now)
+
+    def validate(self) -> None:
+        _validate_date(self.date, "planner date")
+        try:
+            self.mode = PlannerMode(self.mode)
+        except (ValueError, TypeError) as err:
+            raise ModelValidationError("planner mode is invalid") from err
+        if self.meal_id is not None:
+            _validate_text(self.meal_id, "planner meal_id")
+            _validate_text(self.meal_name, "planner meal_name", maximum=200)
+        elif self.meal_name is not None:
+            raise ModelValidationError("unassigned planner entry cannot have a meal name")
+        if self.mode == PlannerMode.UNPLANNED and self.meal_id is not None:
+            raise ModelValidationError("unplanned entry cannot reference a meal")
+        if self.mode not in (PlannerMode.UNPLANNED, PlannerMode.OVERRIDE) and self.meal_id is None:
+            raise ModelValidationError("assigned planner entry must reference a meal")
+        _validate_timestamp(self.updated_at, "planner updated_at")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "date": self.date,
+            "mode": str(self.mode),
+            "meal_id": self.meal_id,
+            "meal_name": self.meal_name,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> PlannerEntry:
+        expected = {"date", "mode", "meal_id", "meal_name", "updated_at"}
+        if not isinstance(value, dict) or set(value) != expected:
+            raise ModelValidationError("planner entry has an invalid shape")
+        try:
+            mode = PlannerMode(value["mode"])
+        except (ValueError, TypeError) as err:
+            raise ModelValidationError("planner mode is invalid") from err
+        entry = cls(
+            date=value["date"],
+            mode=mode,
+            meal_id=value["meal_id"],
+            meal_name=value["meal_name"],
+            updated_at=value["updated_at"],
+        )
+        entry.validate()
+        return entry
+
+
+@dataclass(slots=True)
 class KitchenManagerData:
     """The complete, validated local data set."""
 
@@ -396,6 +641,9 @@ class KitchenManagerData:
     inventory: dict[str, InventoryItem] = field(default_factory=dict)
     transactions: list[StockTransaction] = field(default_factory=list)
     operations: dict[str, OperationRecord] = field(default_factory=dict)
+    meals: dict[str, Meal] = field(default_factory=dict)
+    recurrences: dict[str, RecurrenceRule] = field(default_factory=dict)
+    planner: dict[str, PlannerEntry] = field(default_factory=dict)
 
     @staticmethod
     def inventory_key(product_id: str, location: StorageLocation | str) -> str:
@@ -522,6 +770,38 @@ class KitchenManagerData:
             raise ModelValidationError(
                 "stock transactions and idempotency records do not match"
             )
+        for collection_name in ("meals", "recurrences", "planner"):
+            if not isinstance(getattr(self, collection_name), dict):
+                raise ModelValidationError(f"{collection_name} must be an object")
+        for meal_id, meal in self.meals.items():
+            if not isinstance(meal_id, str) or not isinstance(meal, Meal):
+                raise ModelValidationError("meals contains an invalid record")
+            Meal.from_dict(meal.to_dict())
+            if meal_id != meal.id:
+                raise ModelValidationError("meal key does not match its id")
+            for ingredient in meal.ingredients:
+                if ingredient.product_id not in self.products:
+                    raise ModelValidationError(
+                        f"meal ingredient references unknown product: {ingredient.product_id}"
+                    )
+        recurrence_weekdays: set[int] = set()
+        for meal_id, rule in self.recurrences.items():
+            if not isinstance(meal_id, str) or not isinstance(rule, RecurrenceRule):
+                raise ModelValidationError("recurrences contains an invalid record")
+            RecurrenceRule.from_dict(rule.to_dict())
+            if meal_id != rule.meal_id or meal_id not in self.meals:
+                raise ModelValidationError("recurrence must reference an existing meal")
+            if rule.weekday in recurrence_weekdays:
+                raise ModelValidationError(
+                    "only one recurring meal can be assigned per weekday"
+                )
+            recurrence_weekdays.add(rule.weekday)
+        for day, entry in self.planner.items():
+            if not isinstance(day, str) or not isinstance(entry, PlannerEntry):
+                raise ModelValidationError("planner contains an invalid record")
+            PlannerEntry.from_dict(entry.to_dict())
+            if day != entry.date:
+                raise ModelValidationError("planner key does not match its date")
 
     def to_dict(self) -> dict[str, Any]:
         """Validate and serialize the complete data set."""
@@ -539,6 +819,11 @@ class KitchenManagerData:
             "operations": {
                 key: item.to_dict() for key, item in self.operations.items()
             },
+            "meals": {key: item.to_dict() for key, item in self.meals.items()},
+            "recurrences": {
+                key: item.to_dict() for key, item in self.recurrences.items()
+            },
+            "planner": {key: item.to_dict() for key, item in self.planner.items()},
         }
 
     @classmethod
@@ -553,6 +838,8 @@ class KitchenManagerData:
             return cls._migrate_v2_data(value)
         if version == 3:
             return cls._migrate_v3_data(value)
+        if version == 4:
+            return cls._migrate_v4_data(value)
         if version != DATA_SCHEMA_VERSION:
             raise ModelValidationError(
                 f"unsupported Kitchen Manager data version: {version}"
@@ -564,12 +851,23 @@ class KitchenManagerData:
             "inventory",
             "transactions",
             "operations",
+            "meals",
+            "recurrences",
+            "planner",
         }
         if set(value) != expected_keys:
             raise ModelValidationError("Kitchen Manager data has an invalid shape")
 
         records: dict[str, dict[str, Any]] = {}
-        for name in ("ingredients", "products", "inventory", "operations"):
+        for name in (
+            "ingredients",
+            "products",
+            "inventory",
+            "operations",
+            "meals",
+            "recurrences",
+            "planner",
+        ):
             collection = value.get(name)
             if not isinstance(collection, dict):
                 raise ModelValidationError(f"{name} must be an object")
@@ -600,6 +898,17 @@ class KitchenManagerData:
             operations={
                 key: OperationRecord.from_dict(item)
                 for key, item in records["operations"].items()
+            },
+            meals={
+                key: Meal.from_dict(item) for key, item in records["meals"].items()
+            },
+            recurrences={
+                key: RecurrenceRule.from_dict(item)
+                for key, item in records["recurrences"].items()
+            },
+            planner={
+                key: PlannerEntry.from_dict(item)
+                for key, item in records["planner"].items()
             },
         )
         data.validate()
@@ -733,6 +1042,49 @@ class KitchenManagerData:
             },
         )
         cls._infer_default_locations(data)
+        data.validate()
+        return data
+
+    @classmethod
+    def _migrate_v4_data(cls, value: dict[str, Any]) -> KitchenManagerData:
+        """Add empty meal and planner collections without touching inventory."""
+        expected_keys = {
+            "schema_version",
+            "ingredients",
+            "products",
+            "inventory",
+            "transactions",
+            "operations",
+        }
+        if set(value) != expected_keys:
+            raise ModelValidationError("version 4 data has an invalid shape")
+        for name in ("ingredients", "products", "inventory", "operations"):
+            collection = value[name]
+            if not isinstance(collection, dict):
+                raise ModelValidationError(f"{name} must be an object")
+        if not isinstance(value["transactions"], list):
+            raise ModelValidationError("transactions must be a list")
+        data = cls(
+            ingredients={
+                key: Ingredient.from_dict(item)
+                for key, item in value["ingredients"].items()
+            },
+            products={
+                key: Product.from_dict(item)
+                for key, item in value["products"].items()
+            },
+            inventory={
+                key: InventoryItem.from_dict(item)
+                for key, item in value["inventory"].items()
+            },
+            transactions=[
+                StockTransaction.from_dict(item) for item in value["transactions"]
+            ],
+            operations={
+                key: OperationRecord.from_dict(item)
+                for key, item in value["operations"].items()
+            },
+        )
         data.validate()
         return data
 

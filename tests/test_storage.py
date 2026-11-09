@@ -88,7 +88,7 @@ async def test_v1_store_data_is_migrated_and_persisted(
         is StorageLocation.OTHER
     )
     assert persisted is not None
-    assert persisted["schema_version"] == 4
+    assert persisted["schema_version"] == 5
 
 
 async def test_concurrent_stock_updates_are_persisted_without_lost_writes(

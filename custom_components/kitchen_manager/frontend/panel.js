@@ -4,8 +4,13 @@ class KitchenManagerPanel extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._hass = undefined;
     this._products = [];
+    this._mealProducts = [];
     this._history = [];
+    this._meals = [];
+    this._planner = { weeks: [] };
     this._locations = ["cupboard", "fridge", "freezer", "other"];
+    this._view = "kitchen";
+    this._mealIngredients = [];
     this._search = "";
     this._loading = true;
     this._error = "";
@@ -58,12 +63,72 @@ class KitchenManagerPanel extends HTMLElement {
     }
   }
 
+  async _loadMeals() {
+    this._loading = true;
+    this._error = "";
+    this._render();
+    try {
+      const [mealResult, planner, catalog] = await Promise.all([
+        this._request("meals"),
+        this._request("planner"),
+        this._request("catalog"),
+      ]);
+      this._meals = mealResult.meals;
+      this._planner = planner;
+      this._mealProducts = catalog.products;
+    } catch (error) {
+      this._error = error.message || "Meals could not be loaded.";
+    } finally {
+      this._loading = false;
+      this._render();
+    }
+  }
+
+  async _navigate(view) {
+    this._view = view;
+    if (view === "meals") {
+      await this._loadMeals();
+    } else if (view === "shopping") {
+      await this._loadShopping();
+    } else {
+      await this._load("");
+    }
+  }
+
+  async _loadShopping() {
+    this._loading = true;
+    this._error = "";
+    this._render();
+    try {
+      const catalog = await this._request("catalog");
+      this._products = catalog.products;
+    } catch (error) {
+      this._error = error.message || "Shopping suggestions could not be loaded.";
+    } finally {
+      this._loading = false;
+      this._render();
+    }
+  }
+
   _render() {
     if (!this.shadowRoot) {
       return;
     }
     const products = this._products.map((record) => this._productCard(record)).join("");
     const transactions = this._history.map((item) => this._transactionRow(item)).join("");
+    const title = {
+      kitchen: ["My Kitchen", "Products, stock and recent changes"],
+      meals: ["Meals", "Your recipe collection and four-week planner"],
+      shopping: ["Shopping", "Suggested purchases from your reorder thresholds"],
+    }[this._view];
+    let content = "";
+    if (this._view === "kitchen") {
+      content = this._renderKitchen(products, transactions);
+    } else if (this._view === "meals") {
+      content = this._renderMeals();
+    } else {
+      content = this._renderShopping();
+    }
     this.shadowRoot.innerHTML = `
       <style>
         :host {
@@ -149,6 +214,30 @@ class KitchenManagerPanel extends HTMLElement {
         label { display: block; margin: 12px 0 5px; font-size: .92rem; font-weight: 600; }
         .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
         .loading { padding: 30px 0; text-align: center; }
+        nav { display: flex; gap: 8px; margin: 20px 0 12px; border-bottom: 1px solid var(--divider-color); }
+        nav button { border-radius: 10px 10px 0 0; background: transparent; color: var(--secondary-text-color); }
+        nav button[aria-current="page"] { color: var(--primary-color); border-bottom: 3px solid var(--primary-color); }
+        .meal-card h2 { overflow-wrap: anywhere; }
+        .meal-meta { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+        .meal-meta span, .tag { border-radius: 999px; padding: 4px 9px; background: var(--secondary-background-color); font-size: .85rem; }
+        .planner-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 22px 0 12px; }
+        .week { margin: 16px 0 24px; }
+        .week-grid { display: grid; grid-template-columns: repeat(7, minmax(138px, 1fr)); gap: 8px; overflow-x: auto; padding: 4px 0 10px; }
+        .day-card { min-width: 138px; min-height: 210px; padding: 12px; background: var(--card-background-color, var(--secondary-background-color)); border: 1px solid var(--divider-color); border-radius: 12px; }
+        .day-card h3 { margin: 0 0 8px; font-size: .96rem; }
+        .day-card select { margin: 8px 0; min-height: 38px; }
+        .day-card .actions button { min-height: 36px; font-size: .83rem; }
+        .day-meal { min-height: 42px; margin: 8px 0; font-weight: 650; }
+        .day-mode { color: var(--secondary-text-color); font-size: .78rem; text-transform: capitalize; }
+        .weekday-list { display: flex; flex-wrap: wrap; gap: 5px 12px; margin: 8px 0; }
+        .weekday-list label { display: inline-flex; align-items: center; gap: 5px; margin: 2px 0; font-weight: 400; }
+        .weekday-list input { width: auto; min-height: auto; }
+        .ingredient-row { display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 7px; align-items: center; margin: 8px 0; }
+        .ingredient-row input, .ingredient-row select { min-width: 0; }
+        details { margin-top: 12px; }
+        details summary { cursor: pointer; font-weight: 600; }
+        .shopping-list { list-style: none; padding: 0; }
+        .shopping-list li { padding: 12px 0; border-bottom: 1px solid var(--divider-color); }
         @media (max-width: 600px) {
           main { padding: 20px 12px 36px; }
           header { align-items: center; }
@@ -160,34 +249,113 @@ class KitchenManagerPanel extends HTMLElement {
       <main>
         <header>
           <div>
-            <h1>My Kitchen</h1>
-            <div class="muted">Products, stock and recent changes</div>
+            <h1>${title[0]}</h1>
+            <div class="muted">${title[1]}</div>
           </div>
-          <button type="button" data-action="create">Add product</button>
+          ${this._view === "kitchen" ? `<button type="button" data-action="create">Add product</button>` : this._view === "meals" ? `<button type="button" data-action="create-meal">Add meal</button>` : ""}
         </header>
+        <nav aria-label="Kitchen Manager sections">
+          <button type="button" data-action="navigate" data-view="kitchen" aria-current="${this._view === "kitchen" ? "page" : "false"}">My Kitchen</button>
+          <button type="button" data-action="navigate" data-view="meals" aria-current="${this._view === "meals" ? "page" : "false"}">Meals</button>
+          <button type="button" data-action="navigate" data-view="shopping" aria-current="${this._view === "shopping" ? "page" : "false"}">Shopping</button>
+        </nav>
         <div class="error" data-error role="alert" ${this._error ? "" : "hidden"}>${this._escape(this._error)}</div>
-        <div class="toolbar">
-          <form class="search" data-form="search">
-            <input name="search" type="search" value="${this._escape(this._search)}" placeholder="Search name, brand or barcode" aria-label="Search products">
-            <button type="submit">Search</button>
-          </form>
-          <button class="secondary" type="button" data-action="refresh">Refresh</button>
-        </div>
-        ${this._loading ? `<div class="loading" role="status">Loading kitchen inventory…</div>` : ""}
-        ${!this._loading && !this._products.length ? `
-          <section class="empty">
-            <h2>${this._search ? "No matching products" : "Your catalogue is empty"}</h2>
-            <p class="muted">${this._search ? "Try another search, or clear the search field." : "Create your first product to start tracking household stock."}</p>
-            ${this._search ? `<button class="secondary" type="button" data-action="clear-search">Clear search</button>` : `<button type="button" data-action="create">Add product</button>`}
-          </section>` : ""}
-        <section class="grid" aria-label="Products">${products}</section>
-        <section class="section history">
-          <h2>Recent stock changes</h2>
-          ${transactions ? `<ul class="history-list">${transactions}</ul>` : `<p class="muted">No stock changes recorded yet.</p>`}
-        </section>
+        ${this._loading ? `<div class="loading" role="status">Loading ${this._view === "meals" ? "meals and planner" : this._view === "shopping" ? "shopping suggestions" : "kitchen inventory"}…</div>` : content}
         ${this._modal ? this._renderModal() : ""}
       </main>`;
     this._bindEvents();
+  }
+
+  _renderKitchen(products, transactions) {
+    return `
+      <div class="toolbar">
+        <form class="search" data-form="search">
+          <input name="search" type="search" value="${this._escape(this._search)}" placeholder="Search name, brand or barcode" aria-label="Search products">
+          <button type="submit">Search</button>
+        </form>
+        <button class="secondary" type="button" data-action="refresh">Refresh</button>
+      </div>
+      ${!this._products.length ? `
+        <section class="empty">
+          <h2>${this._search ? "No matching products" : "Your catalogue is empty"}</h2>
+          <p class="muted">${this._search ? "Try another search, or clear the search field." : "Create your first product to start tracking household stock."}</p>
+          ${this._search ? `<button class="secondary" type="button" data-action="clear-search">Clear search</button>` : `<button type="button" data-action="create">Add product</button>`}
+        </section>` : ""}
+      <section class="grid" aria-label="Products">${products}</section>
+      <section class="section history">
+        <h2>Recent stock changes</h2>
+        ${transactions ? `<ul class="history-list">${transactions}</ul>` : `<p class="muted">No stock changes recorded yet.</p>`}
+      </section>`;
+  }
+
+  _renderShopping() {
+    const lowStock = this._products.filter((record) => record.low_stock);
+    return `<section class="section">
+      <h2>Suggested purchases</h2>
+      <p class="muted">Products at or below their saved reorder threshold.</p>
+      ${lowStock.length ? `<ul class="shopping-list">${lowStock.map(({ product, total_quantity }) => `
+        <li><strong>${this._escape(product.name)}</strong> · ${this._number(total_quantity)} ${this._escape(product.package_unit || "items")} in stock</li>
+      `).join("")}</ul>` : `<div class="empty"><p>No products currently meet a reorder threshold. Set a threshold when editing a product to see it here.</p></div>`}
+    </section>`;
+  }
+
+  _renderMeals() {
+    const mealCards = this._meals.map((meal) => `
+      <article class="meal-card">
+        <h2>${this._escape(meal.name)}</h2>
+        <div class="meal-meta"><span>${this._escape(meal.effort[0].toUpperCase() + meal.effort.slice(1))}</span><span>${meal.time_minutes} min</span><span>${meal.eligible_weekdays.length} eligible days</span></div>
+        ${meal.ingredients.length ? `<p class="muted">${meal.ingredients.map((item) => `${this._escape(item.product_name)} · ${this._number(item.quantity)} ${this._escape(item.unit || item.product_unit || "")}`).join(", ")}</p>` : ""}
+        ${meal.recurrence ? `<p class="muted">Repeats ${meal.recurrence.interval_weeks === 1 ? "weekly" : `every ${meal.recurrence.interval_weeks} weeks`} on ${this._weekdayNames[meal.recurrence.weekday]}.</p>` : ""}
+        <div class="actions">
+          <button class="secondary" type="button" data-action="edit-meal" data-meal-id="${this._escape(meal.id)}">Edit</button>
+          <button class="secondary danger" type="button" data-action="delete-meal" data-meal-id="${this._escape(meal.id)}">Delete</button>
+        </div>
+      </article>`).join("");
+    const weeks = this._planner.weeks.map((week) => `
+      <section class="week">
+        <h2>Week of ${this._escape(this._formatDate(week.start_date))}</h2>
+        <div class="week-grid">${week.days.map((day) => this._plannerDay(day)).join("")}</div>
+      </section>`).join("");
+    return `
+      <section class="section">
+        <div class="planner-toolbar"><div><h2>Four-week meal planner</h2><p class="muted">Selections are saved automatically and remain fixed when you return.</p></div>
+          <button class="secondary" type="button" data-action="generate-planner">Suggest meals</button>
+        </div>
+        ${this._planner.weeks.length ? weeks : `<div class="loading">The planner is being prepared.</div>`}
+      </section>
+      <section class="section" style="margin-top:24px">
+        <div class="planner-toolbar"><div><h2>Your meals</h2><p class="muted">Recipes can have optional ingredients and instructions.</p></div></div>
+        ${mealCards ? `<section class="grid">${mealCards}</section>` : `<div class="empty"><h3>No meals yet</h3><p class="muted">Add a meal to start building your recipe collection and planner.</p><button type="button" data-action="create-meal">Add your first meal</button></div>`}
+      </section>`;
+  }
+
+  _plannerDay(day) {
+    const mealOptions = this._meals.filter((meal) => meal.eligible_weekdays.includes(day.weekday));
+    const options = mealOptions.map((meal) => `<option value="${this._escape(meal.id)}" ${day.meal_id === meal.id && !(day.recurring && day.mode === "override") ? "selected" : ""}>${this._escape(meal.name)}</option>`).join("");
+    const recurrenceOption = day.recurring
+      ? `<option value="__recurrence__" ${day.mode === "override" ? "selected" : ""}>Use recurrence: ${this._escape(day.recurrence_meal_name || "scheduled meal")}</option>`
+      : "";
+    return `<article class="day-card">
+      <h3>${this._weekdayNames[day.weekday]} <span class="muted">${this._escape(this._formatDate(day.date, true))}</span></h3>
+      <div class="day-mode">${day.mode}${day.recurring && day.mode !== "recurring" ? " · recurring" : ""}</div>
+      <div class="day-meal">${this._escape(day.meal_name || "Unplanned")}</div>
+      <select aria-label="Meal for ${this._weekdayNames[day.weekday]} ${this._escape(day.date)}" data-day-select="${this._escape(day.date)}">
+        <option value="">Unplanned</option>${recurrenceOption}${options}
+      </select>
+      <div class="actions"><button type="button" data-action="assign-day" data-date="${this._escape(day.date)}">Save day</button>
+      <button class="secondary" type="button" data-action="shuffle-day" data-date="${this._escape(day.date)}" ${mealOptions.length < 2 ? "disabled" : ""}>Shuffle</button></div>
+    </article>`;
+  }
+
+  get _weekdayNames() {
+    return ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  }
+
+  _formatDate(value, short = false) {
+    const parsed = new Date(`${value}T12:00:00`);
+    return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleDateString(undefined, short
+      ? { month: "short", day: "numeric" }
+      : { month: "long", day: "numeric", year: "numeric" });
   }
 
   _productCard(record) {
@@ -234,6 +402,63 @@ class KitchenManagerPanel extends HTMLElement {
   }
 
   _renderModal() {
+    if (this._modal.type === "meal") {
+      const meal = this._modal.meal;
+      const eligible = meal?.eligible_weekdays || [0, 1, 2, 3, 4, 5, 6];
+      const recurrence = meal?.recurrence;
+      const ingredients = this._mealIngredients.map((item, index) => `
+        <div class="ingredient-row">
+          <select name="ingredient_product_${index}" aria-label="Ingredient product" required>
+            <option value="">Choose product</option>
+            ${this._mealProducts.map(({ product }) => `<option value="${this._escape(product.id)}" ${item.product_id === product.id ? "selected" : ""}>${this._escape(product.name)}${product.brand ? ` (${this._escape(product.brand)})` : ""}</option>`).join("")}
+          </select>
+          <input name="ingredient_quantity_${index}" type="number" min="0.000001" step="any" value="${this._escape(item.quantity ?? "")}" aria-label="Ingredient quantity" placeholder="Qty">
+          <input name="ingredient_unit_${index}" value="${this._escape(item.unit || item.product_unit || "")}" aria-label="Ingredient unit" placeholder="Unit">
+          <button class="secondary danger" type="button" data-action="remove-ingredient" data-index="${index}" aria-label="Remove ingredient">×</button>
+        </div>`).join("");
+      return `<div class="modal-backdrop" data-action="backdrop">
+        <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+          <div class="modal-head"><h2 id="modal-title">${meal ? "Edit meal" : "Add meal"}</h2><button class="secondary" type="button" data-action="close" aria-label="Close">×</button></div>
+          <form data-form="meal" data-meal-id="${this._escape(meal?.id || "")}">
+            <label for="meal-name">Name</label>
+            <input id="meal-name" name="name" required maxlength="200" value="${this._escape(meal?.name || "")}">
+            <div class="grid">
+              <div><label for="meal-effort">Effort</label><select id="meal-effort" name="effort">
+                ${["low", "medium", "high"].map((item) => `<option value="${item}" ${(meal?.effort || "medium") === item ? "selected" : ""}>${item[0].toUpperCase()}${item.slice(1)}</option>`).join("")}
+              </select></div>
+              <div><label for="meal-time">Preparation/cooking time (minutes)</label><input id="meal-time" name="time_minutes" type="number" min="0" step="1" required value="${meal?.time_minutes ?? ""}"></div>
+            </div>
+            <label>Eligible weekdays</label>
+            <div class="weekday-list">${this._weekdayNames.map((day, index) => `<label><input type="checkbox" name="eligible_weekdays" value="${index}" ${eligible.includes(index) ? "checked" : ""}>${day.slice(0, 3)}</label>`).join("")}</div>
+            <details ${this._mealIngredients.length || meal?.instructions || recurrence ? "open" : ""}>
+              <summary>Ingredients and instructions (optional)</summary>
+              <div style="margin-top:12px">
+                <strong>Ingredients from product catalogue</strong>
+                <p class="muted">${this._mealProducts.length ? "Ingredients reference products, whether or not they are currently in stock." : "Create products in My Kitchen before adding recipe ingredients."}</p>
+                ${ingredients}
+                <button class="secondary" type="button" data-action="add-ingredient">Add ingredient</button>
+                <label for="meal-instructions">Cooking instructions</label>
+                <textarea id="meal-instructions" name="instructions" rows="4" maxlength="20000">${this._escape(meal?.instructions || "")}</textarea>
+              </div>
+            </details>
+            <details ${recurrence ? "open" : ""}>
+              <summary>Recurring meal (optional)</summary>
+              <div class="grid">
+                <div><label for="meal-recurrence">Repeats</label><select id="meal-recurrence" name="recurrence_interval">
+                  <option value="" ${!recurrence ? "selected" : ""}>Does not repeat</option>
+                  ${[1, 2, 4].map((interval) => `<option value="${interval}" ${recurrence?.interval_weeks === interval ? "selected" : ""}>${interval === 1 ? "Weekly" : `Every ${interval} weeks`}</option>`).join("")}
+                </select></div>
+                <div><label for="meal-recurrence-day">Weekday</label><select id="meal-recurrence-day" name="recurrence_weekday">
+                  ${this._weekdayNames.map((day, index) => `<option value="${index}" ${recurrence?.weekday === index ? "selected" : ""}>${day}</option>`).join("")}
+                </select></div>
+              </div>
+              <p class="muted">An individual date can be changed without removing this recurrence.</p>
+            </details>
+            <div class="form-actions"><button class="secondary" type="button" data-action="close">Cancel</button><button type="submit">${meal ? "Save changes" : "Create meal"}</button></div>
+          </form>
+        </section>
+      </div>`;
+    }
     if (this._modal.type === "product") {
       const product = this._modal.product;
       const editing = Boolean(product);
@@ -299,7 +524,10 @@ class KitchenManagerPanel extends HTMLElement {
     if (action === "backdrop" && event.target !== element) {
       return;
     }
-    if (action === "create") {
+    if (action === "navigate") {
+      await this._navigate(element.dataset.view);
+      return;
+    } else if (action === "create") {
       this._modal = { type: "product" };
     } else if (action === "edit") {
       const record = this._products.find((item) => item.product.id === element.dataset.productId);
@@ -314,10 +542,70 @@ class KitchenManagerPanel extends HTMLElement {
         productId: element.dataset.productId,
         operation: element.dataset.operation,
       };
+    } else if (action === "create-meal") {
+      this._mealIngredients = [];
+      this._modal = { type: "meal" };
+    } else if (action === "edit-meal") {
+      const meal = this._meals.find((item) => item.id === element.dataset.mealId);
+      this._mealIngredients = meal.ingredients.map((item) => ({ ...item }));
+      this._modal = { type: "meal", meal };
+    } else if (action === "delete-meal") {
+      const meal = this._meals.find((item) => item.id === element.dataset.mealId);
+      if (meal && window.confirm(`Delete "${meal.name}"? Past planner entries will be retained.`)) {
+        try {
+          await this._request("meal/delete", { meal_id: meal.id });
+          await this._loadMeals();
+        } catch (error) {
+          this._error = error.message || "The meal could not be deleted.";
+          this._render();
+        }
+      }
+      return;
+    } else if (action === "add-ingredient" || action === "remove-ingredient") {
+      this._mealIngredients = this._readIngredientRows();
+      if (action === "add-ingredient") {
+        this._mealIngredients.push({ product_id: "", quantity: "", unit: "" });
+      } else {
+        this._mealIngredients.splice(Number(element.dataset.index), 1);
+      }
+    } else if (action === "generate-planner") {
+      try {
+        await this._request("planner/generate");
+        await this._loadMeals();
+      } catch (error) {
+        this._error = error.message || "Suggestions could not be generated.";
+        this._render();
+      }
+      return;
+    } else if (action === "assign-day") {
+      const date = element.dataset.date;
+      const select = this.shadowRoot.querySelector(`[data-day-select="${date}"]`);
+      try {
+        await this._request("planner/set", {
+          date,
+          ...(select.value === "__recurrence__"
+            ? { use_recurrence: true }
+            : { meal_id: select.value || null }),
+        });
+        await this._loadMeals();
+      } catch (error) {
+        this._error = error.message || "The planner date could not be saved.";
+        this._render();
+      }
+      return;
+    } else if (action === "shuffle-day") {
+      try {
+        await this._request("planner/shuffle", { date: element.dataset.date });
+        await this._loadMeals();
+      } catch (error) {
+        this._error = error.message || "This day could not be shuffled.";
+        this._render();
+      }
+      return;
     } else if (action === "close" || action === "backdrop") {
       this._modal = null;
     } else if (action === "refresh") {
-      await this._load();
+      await (this._view === "meals" ? this._loadMeals() : this._view === "shopping" ? this._loadShopping() : this._load());
       return;
     } else if (action === "clear-search") {
       await this._load("");
@@ -349,6 +637,50 @@ class KitchenManagerPanel extends HTMLElement {
             ? { location: String(data.get("location")).trim() }
             : {}),
         });
+      } else if (form.dataset.form === "meal") {
+        const weekdays = data.getAll("eligible_weekdays").map(Number);
+        if (!weekdays.length) {
+          throw new Error("Select at least one eligible weekday.");
+        }
+        const ingredients = [];
+        for (let index = 0; index < this._mealIngredients.length; index += 1) {
+          const productId = String(data.get(`ingredient_product_${index}`) || "");
+          const quantity = String(data.get(`ingredient_quantity_${index}`) || "").trim();
+          const unit = String(data.get(`ingredient_unit_${index}`) || "").trim();
+          if (!productId || !quantity || !Number.isFinite(Number(quantity)) || Number(quantity) <= 0) {
+            throw new Error("Choose a catalogue product and enter a positive quantity for each ingredient.");
+          }
+          ingredients.push({
+            product_id: productId,
+            quantity: Number(quantity),
+            ...(unit ? { unit } : {}),
+          });
+        }
+        const interval = String(data.get("recurrence_interval") || "");
+        const recurrenceWeekday = Number(data.get("recurrence_weekday"));
+        if (interval && !weekdays.includes(recurrenceWeekday)) {
+          throw new Error("The recurring weekday must also be selected as an eligible weekday.");
+        }
+        const recurrence = interval
+          ? {
+            weekday: recurrenceWeekday,
+            interval_weeks: Number(interval),
+          }
+          : null;
+        await this._request("meal/save", {
+          ...(form.dataset.mealId ? { meal_id: form.dataset.mealId } : {}),
+          name: String(data.get("name") || "").trim(),
+          effort: data.get("effort"),
+          time_minutes: Number(data.get("time_minutes")),
+          eligible_weekdays: weekdays,
+          ingredients,
+          instructions: String(data.get("instructions") || "").trim() || null,
+          recurrence,
+        });
+        this._modal = null;
+        this._mealIngredients = [];
+        await this._loadMeals();
+        return;
       } else {
         const fields = this._productFields(data, form.dataset.productId);
         if (form.dataset.productId) {
@@ -361,7 +693,7 @@ class KitchenManagerPanel extends HTMLElement {
         }
       }
       this._modal = null;
-      await this._load();
+      await (this._view === "meals" ? this._loadMeals() : this._load());
     } catch (error) {
       this._error = error.message || "The change could not be saved.";
       this._showError(this._error);
@@ -370,6 +702,14 @@ class KitchenManagerPanel extends HTMLElement {
         submit.disabled = false;
       }
     }
+  }
+
+  _readIngredientRows() {
+    return [...this.shadowRoot.querySelectorAll(".ingredient-row")].map((row) => ({
+      product_id: row.querySelector("select").value,
+      quantity: row.querySelector('input[name^="ingredient_quantity_"]').value,
+      unit: row.querySelector('input[name^="ingredient_unit_"]').value,
+    }));
   }
 
   _productFields(data, productId) {

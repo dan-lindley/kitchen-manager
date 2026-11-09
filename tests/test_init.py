@@ -24,6 +24,16 @@ async def test_setup_and_unload(
     websocket_commands = hass.data["websocket_api"]
     assert "kitchen_manager/catalog" in websocket_commands
     assert "kitchen_manager/stock/change" in websocket_commands
+    for command in (
+        "kitchen_manager/meals",
+        "kitchen_manager/meal/save",
+        "kitchen_manager/meal/delete",
+        "kitchen_manager/planner",
+        "kitchen_manager/planner/generate",
+        "kitchen_manager/planner/set",
+        "kitchen_manager/planner/shuffle",
+    ):
+        assert command in websocket_commands
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert not frontend.async_panel_exists(hass, "kitchen-manager")
 

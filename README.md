@@ -1,7 +1,7 @@
 # Kitchen Manager
 
 A local-first Home Assistant custom integration for household food inventory
-and future meal planning. Kitchen Manager does not use Grocy, an external
+and meal planning. Kitchen Manager does not use Grocy, an external
 database, or Home Assistant's Recorder database.
 
 ## My Kitchen panel
@@ -33,6 +33,33 @@ used locations are suggested in the product and stock forms. For consumption,
 leaving location blank retains the existing safe behavior: stock must be in
 only one location, otherwise the user must choose one.
 
+## Meals and planner
+
+The **Meals** section in the Kitchen Manager panel provides a persistent recipe
+repository and a rolling four-week Monday-to-Sunday planner. Meals can be
+created, edited, and deleted with a name, effort, preparation/cooking time,
+and eligible weekdays (all weekdays by default). Ingredients and cooking
+instructions are optional. Ingredients reference catalogue products, including
+products that currently have no stock; they are not substituted or grouped.
+
+Choose a meal for an individual date, mark that date unplanned, generate
+suggestions for eligible open dates, or shuffle one date without changing
+other selections. Generated choices are saved and do not change on refresh.
+Random selection avoids meals assigned in the previous seven days when an
+alternative is available. If no eligible recipe exists, a date remains
+unplanned.
+
+A meal can repeat weekly, every two weeks, or every four weeks on one eligible
+weekday. Each date occurrence can be overridden or explicitly left unplanned
+without changing the recurrence, and can be reset to the recurring selection.
+Only one recurrence can be configured per weekday to avoid ambiguous
+assignments. Past planner assignments are retained when a meal is deleted;
+future assignments to it are cleared.
+
+The **Shopping** section currently shows products at or below their configured
+reorder thresholds. It is a read-only suggestion view, not a manually managed
+shopping list.
+
 ## Installation
 
 ### HACS
@@ -43,6 +70,11 @@ only one location, otherwise the user must choose one.
    **Integration**.
 4. Download **Kitchen Manager**, restart Home Assistant, and add the integration
    from **Settings → Devices & services → Add integration**.
+
+To update an existing HACS installation, open **HACS → Integrations**, select
+Kitchen Manager, choose **Update** (or download the pending update), and restart
+Home Assistant. Your saved products, stock, meals, recurrence rules, and
+planner selections are retained and migrated automatically.
 
 ### Manual
 
@@ -163,15 +195,15 @@ individual products as Home Assistant entities.
 
 Kitchen Manager stores a versioned JSON document with Home Assistant's
 `Store` helper in the managed `.storage` directory. Products, generic
-ingredients, inventory by location, transaction history, and idempotency
-records are saved together. Writes use atomic storage and are read back for
-verification before becoming the runtime snapshot. Inventory changes are
-serialized so concurrent requests cannot overwrite one another. Home
-Assistant's configuration backups include this storage; include Home Assistant
-settings in backups.
+ingredients, inventory by location, transaction history, idempotency records,
+meals, recurrence rules, and date-level planner selections are saved together.
+Writes use atomic storage and are read back for verification before becoming
+the runtime snapshot. Updates are serialized so concurrent requests cannot
+overwrite one another. Home Assistant's configuration backups include this
+storage; include Home Assistant settings in backups.
 
 Version 1 data from Kitchen Manager 0.1.0, version 2 data from 0.2.0, and
-version 3 data from the sidebar-panel checkpoint are migrated automatically.
+versions 3 and 4 from subsequent inventory releases are migrated automatically.
 Existing product, inventory, and transaction IDs and stock are preserved.
 Default product locations are inferred from the largest positive stock
 location when possible, and otherwise default to `cupboard`. The description
@@ -188,8 +220,9 @@ transactions. No history is automatically deleted.
   tracked as a per-product, per-location total.
 - Stock quantities are item/package counts and currently use the generic `item`
   unit; package-size conversion is not implemented.
-- Meal repository, four-week planner, shopping list, and scanning/voice
-  workflows are planned, not implemented.
+- Shopping is currently a read-only view of configured reorder thresholds.
+- Recipe nutrition, inventory-aware recommendations, voice commands, and
+  scanner workflows are not implemented.
 
 ## Development
 
