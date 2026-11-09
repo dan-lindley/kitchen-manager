@@ -8,6 +8,8 @@ from enum import StrEnum
 import math
 from typing import Any
 
+from .const import DATA_SCHEMA_VERSION
+
 
 class ModelValidationError(ValueError):
     """Raised when persisted or newly created model data is invalid."""
@@ -35,6 +37,14 @@ class VerificationStatus(StrEnum):
     UNVERIFIED = "unverified"
     ESTIMATED = "estimated"
     VERIFIED = "verified"
+
+
+class TransactionType(StrEnum):
+    """Supported stock transaction types."""
+
+    ADD = "add"
+    CONSUME = "consume"
+    SET = "set"
 
 
 def _now() -> str:
@@ -230,12 +240,133 @@ class InventoryItem:
 
 
 @dataclass(slots=True)
+class StockTransaction:
+    """An immutable audit record for a successful stock change."""
+
+    id: str
+    product_id: str
+    operation: TransactionType
+    quantity_changed: float
+    previous_quantity: float
+    new_quantity: float
+    location: StorageLocation
+    timestamp: str = field(default_factory=_now)
+    operation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        self.id = _validate_text(self.id, "transaction.id")
+        self.product_id = _validate_text(self.product_id, "transaction.product_id")
+        self.operation = _validate_enum(
+            TransactionType, self.operation, "transaction.operation"
+        )
+        if isinstance(self.quantity_changed, bool) or not isinstance(
+            self.quantity_changed, (int, float)
+        ):
+            raise ModelValidationError(
+                "transaction.quantity_changed must be a number"
+            )
+        try:
+            finite_change = math.isfinite(self.quantity_changed)
+        except OverflowError as err:
+            raise ModelValidationError(
+                "transaction.quantity_changed must be finite"
+            ) from err
+        if not finite_change:
+            raise ModelValidationError(
+                "transaction.quantity_changed must be finite"
+            )
+        self.quantity_changed = float(self.quantity_changed)
+        self.previous_quantity = _validate_number(
+            self.previous_quantity, "transaction.previous_quantity", allow_zero=True
+        )
+        self.new_quantity = _validate_number(
+            self.new_quantity, "transaction.new_quantity", allow_zero=True
+        )
+        self.location = _validate_enum(
+            StorageLocation, self.location, "transaction.location"
+        )
+        self.timestamp = _validate_timestamp(self.timestamp, "transaction.timestamp")
+        self.operation_id = _validate_optional_text(
+            self.operation_id, "transaction.operation_id"
+        )
+
+        expected_change = {
+            TransactionType.ADD: self.new_quantity - self.previous_quantity,
+            TransactionType.CONSUME: self.new_quantity - self.previous_quantity,
+            TransactionType.SET: self.new_quantity - self.previous_quantity,
+        }[self.operation]
+        if not math.isclose(
+            self.quantity_changed, expected_change, rel_tol=1e-12, abs_tol=0
+        ):
+            raise ModelValidationError(
+                "transaction.quantity_changed does not match previous "
+                "and new quantities"
+            )
+        if self.operation is TransactionType.ADD and self.quantity_changed <= 0:
+            raise ModelValidationError("add transactions must increase stock")
+        if self.operation is TransactionType.CONSUME and self.quantity_changed >= 0:
+            raise ModelValidationError("consume transactions must decrease stock")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize this transaction."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Any) -> StockTransaction:
+        """Deserialize and validate a stock transaction."""
+        if not isinstance(value, dict):
+            raise ModelValidationError("transaction must be an object")
+        try:
+            return cls(**value)
+        except TypeError as err:
+            raise ModelValidationError("transaction has an invalid shape") from err
+
+
+@dataclass(slots=True)
+class OperationRecord:
+    """The original request fingerprint and result for an idempotent operation."""
+
+    operation_id: str
+    fingerprint: str
+    result: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        self.operation_id = _validate_text(self.operation_id, "operation.operation_id")
+        self.fingerprint = _validate_text(self.fingerprint, "operation.fingerprint")
+        if not isinstance(self.result, dict):
+            raise ModelValidationError("operation.result must be an object")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize this operation record."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Any) -> OperationRecord:
+        """Deserialize and validate an operation record."""
+        if not isinstance(value, dict):
+            raise ModelValidationError("operation record must be an object")
+        try:
+            return cls(**value)
+        except TypeError as err:
+            raise ModelValidationError(
+                "operation record has an invalid shape"
+            ) from err
+
+
+@dataclass(slots=True)
 class KitchenManagerData:
     """The complete, validated local data set."""
 
     ingredients: dict[str, Ingredient] = field(default_factory=dict)
     products: dict[str, Product] = field(default_factory=dict)
     inventory: dict[str, InventoryItem] = field(default_factory=dict)
+    transactions: list[StockTransaction] = field(default_factory=list)
+    operations: dict[str, OperationRecord] = field(default_factory=dict)
+
+    @staticmethod
+    def inventory_key(product_id: str, location: StorageLocation) -> str:
+        """Return the stable key for one product at one storage location."""
+        return f"{product_id}::{location.value}"
 
     def validate(self) -> None:
         """Validate record keys, references, and unique barcodes."""
@@ -271,20 +402,98 @@ class KitchenManagerData:
             if not isinstance(key, str) or not isinstance(item, InventoryItem):
                 raise ModelValidationError("inventory contains an invalid record")
             InventoryItem.from_dict(item.to_dict())
-            if key != item.product_id:
+            if key != self.inventory_key(item.product_id, item.location):
                 raise ModelValidationError(
-                    "inventory key does not match its product id"
+                    "inventory key does not match its product and location"
                 )
             if item.product_id not in self.products:
                 raise ModelValidationError(
                     f"inventory references unknown product {item.product_id}"
                 )
+        if not isinstance(self.transactions, list):
+            raise ModelValidationError("transactions must be a list")
+        transaction_ids: set[str] = set()
+        transactions_by_id: dict[str, StockTransaction] = {}
+        for transaction in self.transactions:
+            if not isinstance(transaction, StockTransaction):
+                raise ModelValidationError("transactions contains an invalid record")
+            StockTransaction.from_dict(transaction.to_dict())
+            if transaction.id in transaction_ids:
+                raise ModelValidationError("transaction IDs must be unique")
+            transaction_ids.add(transaction.id)
+            transactions_by_id[transaction.id] = transaction
+            if transaction.product_id not in self.products:
+                raise ModelValidationError(
+                    f"transaction references unknown product {transaction.product_id}"
+                )
+        prior_by_location: dict[str, float] = {}
+        latest_by_location: dict[str, float] = {}
+        seen_operation_ids: set[str] = set()
+        for transaction in self.transactions:
+            key = self.inventory_key(transaction.product_id, transaction.location)
+            if key in prior_by_location and not math.isclose(
+                transaction.previous_quantity,
+                prior_by_location[key],
+                rel_tol=1e-12,
+                abs_tol=0,
+            ):
+                raise ModelValidationError(
+                    "stock transaction history has a discontinuous quantity"
+                )
+            prior_by_location[key] = transaction.new_quantity
+            latest_by_location[key] = transaction.new_quantity
+            if transaction.operation_id is not None:
+                if transaction.operation_id in seen_operation_ids:
+                    raise ModelValidationError(
+                        "operation IDs must be unique in transaction history"
+                    )
+                seen_operation_ids.add(transaction.operation_id)
+        for key, quantity in latest_by_location.items():
+            item = self.inventory.get(key)
+            if item is None or not math.isclose(
+                item.quantity, quantity, rel_tol=1e-12, abs_tol=0
+            ):
+                raise ModelValidationError(
+                    "current inventory does not match the latest transaction"
+                )
+        if not isinstance(self.operations, dict):
+            raise ModelValidationError("operations must be an object")
+        for operation_id, operation in self.operations.items():
+            if not isinstance(operation_id, str) or not isinstance(
+                operation, OperationRecord
+            ):
+                raise ModelValidationError("operations contains an invalid record")
+            OperationRecord.from_dict(operation.to_dict())
+            if operation_id != operation.operation_id:
+                raise ModelValidationError(
+                    "operation key does not match its operation id"
+                )
+            transaction_id = operation.result.get("transaction_id")
+            if not isinstance(transaction_id, str):
+                raise ModelValidationError(
+                    "operation result has an invalid transaction ID"
+                )
+            transaction = transactions_by_id.get(transaction_id)
+            if (
+                transaction is None
+                or transaction.operation_id != operation_id
+                or operation.result.get("product_id") != transaction.product_id
+                or operation.result.get("quantity") != transaction.new_quantity
+                or operation.result.get("location") != transaction.location.value
+            ):
+                raise ModelValidationError(
+                    "operation record does not match its stock transaction"
+                )
+        if seen_operation_ids != set(self.operations):
+            raise ModelValidationError(
+                "stock transactions and idempotency records do not match"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Validate and serialize the complete data set."""
         self.validate()
         return {
-            "schema_version": 1,
+            "schema_version": DATA_SCHEMA_VERSION,
             "ingredients": {
                 key: item.to_dict() for key, item in self.ingredients.items()
             },
@@ -292,26 +501,47 @@ class KitchenManagerData:
             "inventory": {
                 key: item.to_dict() for key, item in self.inventory.items()
             },
+            "transactions": [item.to_dict() for item in self.transactions],
+            "operations": {
+                key: item.to_dict() for key, item in self.operations.items()
+            },
         }
 
     @classmethod
     def from_dict(cls, value: Any) -> KitchenManagerData:
         """Deserialize and validate the complete data set."""
         version = value.get("schema_version") if isinstance(value, dict) else None
-        if isinstance(version, bool) or not isinstance(version, int) or version != 1:
+        if isinstance(version, bool) or not isinstance(version, int):
             raise ModelValidationError("unsupported Kitchen Manager data version")
-        expected_keys = {"schema_version", "ingredients", "products", "inventory"}
+        if version == 1:
+            return cls._migrate_v1_data(value)
+        if version != DATA_SCHEMA_VERSION:
+            raise ModelValidationError(
+                f"unsupported Kitchen Manager data version: {version}"
+            )
+        expected_keys = {
+            "schema_version",
+            "ingredients",
+            "products",
+            "inventory",
+            "transactions",
+            "operations",
+        }
         if set(value) != expected_keys:
             raise ModelValidationError("Kitchen Manager data has an invalid shape")
 
         records: dict[str, dict[str, Any]] = {}
-        for name in ("ingredients", "products", "inventory"):
+        for name in ("ingredients", "products", "inventory", "operations"):
             collection = value.get(name)
             if not isinstance(collection, dict):
                 raise ModelValidationError(f"{name} must be an object")
             if not all(isinstance(key, str) for key in collection):
                 raise ModelValidationError(f"{name} keys must be strings")
             records[name] = collection
+
+        transactions = value["transactions"]
+        if not isinstance(transactions, list):
+            raise ModelValidationError("transactions must be a list")
 
         data = cls(
             ingredients={
@@ -326,6 +556,46 @@ class KitchenManagerData:
                 key: InventoryItem.from_dict(item)
                 for key, item in records["inventory"].items()
             },
+            transactions=[
+                StockTransaction.from_dict(item) for item in transactions
+            ],
+            operations={
+                key: OperationRecord.from_dict(item)
+                for key, item in records["operations"].items()
+            },
+        )
+        data.validate()
+        return data
+
+    @classmethod
+    def _migrate_v1_data(cls, value: dict[str, Any]) -> KitchenManagerData:
+        """Migrate Phase 1 inventory into per-location keys."""
+        if set(value) != {"schema_version", "ingredients", "products", "inventory"}:
+            raise ModelValidationError("version 1 data has an invalid shape")
+        for name in ("ingredients", "products", "inventory"):
+            if not isinstance(value[name], dict):
+                raise ModelValidationError(f"{name} must be an object")
+
+        migrated_inventory: dict[str, InventoryItem] = {}
+        for product_id, raw_item in value["inventory"].items():
+            item = InventoryItem.from_dict(raw_item)
+            if product_id != item.product_id:
+                raise ModelValidationError(
+                    "legacy inventory key does not match its product id"
+                )
+            key = cls.inventory_key(item.product_id, item.location)
+            migrated_inventory[key] = item
+
+        data = cls(
+            ingredients={
+                key: Ingredient.from_dict(item)
+                for key, item in value["ingredients"].items()
+            },
+            products={
+                key: Product.from_dict(item)
+                for key, item in value["products"].items()
+            },
+            inventory=migrated_inventory,
         )
         data.validate()
         return data

@@ -9,8 +9,11 @@ from custom_components.kitchen_manager.models import (
     InventoryItem,
     KitchenManagerData,
     ModelValidationError,
+    OperationRecord,
     Product,
     StorageLocation,
+    StockTransaction,
+    TransactionType,
     VerificationStatus,
 )
 
@@ -35,8 +38,9 @@ def test_data_rejects_duplicate_barcodes_and_unknown_references() -> None:
         KitchenManagerData(products={first.id: first, second.id: second}).validate()
 
     item = InventoryItem(product_id="missing", quantity=1, unit="piece")
+    key = KitchenManagerData.inventory_key(item.product_id, item.location)
     with pytest.raises(ModelValidationError, match="unknown product"):
-        KitchenManagerData(inventory={item.product_id: item}).validate()
+        KitchenManagerData(inventory={key: item}).validate()
 
 
 def test_inventory_supports_estimates_and_storage_location() -> None:
@@ -103,3 +107,100 @@ def test_data_rejects_unknown_top_level_fields() -> None:
                 "unrecognized": {"future_data": True},
             }
         )
+
+
+def test_v1_data_migrates_and_preserves_saved_location() -> None:
+    """Keep Phase 1 product, inventory, and saved location data."""
+    ingredient = Ingredient(id="tomatoes", name="Chopped tomatoes")
+    product = Product(
+        id="tomatoes-can",
+        name="Chopped tomatoes",
+        ingredient_id=ingredient.id,
+    )
+    item = InventoryItem(
+        product_id=product.id,
+        quantity=3,
+        unit="item",
+        location=StorageLocation.FRIDGE,
+    )
+    old_data = {
+        "schema_version": 1,
+        "ingredients": {ingredient.id: ingredient.to_dict()},
+        "products": {product.id: product.to_dict()},
+        "inventory": {product.id: item.to_dict()},
+    }
+
+    migrated = KitchenManagerData.from_dict(old_data)
+
+    assert migrated.inventory[
+        KitchenManagerData.inventory_key(product.id, StorageLocation.FRIDGE)
+    ].quantity == 3
+    assert migrated.inventory[
+        KitchenManagerData.inventory_key(product.id, StorageLocation.FRIDGE)
+    ].location is StorageLocation.FRIDGE
+    assert migrated.transactions == []
+    assert migrated.to_dict()["schema_version"] == 2
+
+
+def test_transaction_history_must_match_current_inventory() -> None:
+    """Reject persisted stock and transaction records that disagree."""
+    product = Product(id="milk", name="Milk")
+    item = InventoryItem(
+        product_id=product.id, quantity=2, unit="item", location=StorageLocation.FRIDGE
+    )
+    transaction = StockTransaction(
+        id="transaction-1",
+        product_id=product.id,
+        operation=TransactionType.ADD,
+        quantity_changed=1,
+        previous_quantity=0,
+        new_quantity=1,
+        location=StorageLocation.FRIDGE,
+    )
+    data = KitchenManagerData(
+        products={product.id: product},
+        inventory={KitchenManagerData.inventory_key(product.id, item.location): item},
+        transactions=[transaction],
+    )
+
+    with pytest.raises(ModelValidationError, match="does not match"):
+        data.validate()
+
+
+def test_idempotency_record_must_match_its_stock_transaction() -> None:
+    """Reject malformed retries that could return a mismatched success response."""
+    product = Product(id="milk", name="Milk")
+    item = InventoryItem(
+        product_id=product.id, quantity=2, unit="item", location=StorageLocation.FRIDGE
+    )
+    transaction = StockTransaction(
+        id="transaction-1",
+        product_id=product.id,
+        operation=TransactionType.ADD,
+        quantity_changed=2,
+        previous_quantity=0,
+        new_quantity=2,
+        location=StorageLocation.FRIDGE,
+        operation_id="delivery-1",
+    )
+    operation = OperationRecord(
+        operation_id="delivery-1",
+        fingerprint="{}",
+        result={
+            "product_id": product.id,
+            "quantity": 2,
+            "location": StorageLocation.FRIDGE.value,
+            "transaction_id": transaction.id,
+        },
+    )
+    data = KitchenManagerData(
+        products={product.id: product},
+        inventory={KitchenManagerData.inventory_key(product.id, item.location): item},
+        transactions=[transaction],
+        operations={operation.operation_id: operation},
+    )
+    data.validate()
+
+    operation.result["transaction_id"] = []
+    with pytest.raises(ModelValidationError, match="invalid transaction ID"):
+        data.validate()

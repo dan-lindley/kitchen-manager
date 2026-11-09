@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, STORAGE_VERSION
+from .const import (
+    DATA_SCHEMA_VERSION,
+    DOMAIN,
+    INVENTORY_UPDATED_SIGNAL,
+    STORAGE_VERSION,
+)
 from .models import KitchenManagerData
+
+_Result = TypeVar("_Result")
 
 
 class KitchenManagerStorageError(HomeAssistantError):
@@ -24,7 +34,11 @@ class KitchenManagerStorage:
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize Home Assistant's atomic, versioned storage helper."""
         self._store: Store[dict[str, Any]] = Store(
-            hass, STORAGE_VERSION, DOMAIN, atomic_writes=True
+            hass,
+            STORAGE_VERSION,
+            DOMAIN,
+            atomic_writes=True,
+            serialize_in_event_loop=False,
         )
         self._storage_path = Path(self._store.path)
         self._write_lock = asyncio.Lock()
@@ -45,6 +59,8 @@ class KitchenManagerStorage:
             return self.data
 
         self._data = KitchenManagerData.from_dict(stored_data)
+        if stored_data.get("schema_version") != DATA_SCHEMA_VERSION:
+            await self.async_save(self._data)
         return self.data
 
     @property
@@ -56,22 +72,43 @@ class KitchenManagerStorage:
         """Validate and verify atomic persistence before publishing the snapshot."""
         async with self._write_lock:
             snapshot = KitchenManagerData.from_dict(data.to_dict())
-            serialized = snapshot.to_dict()
-            await self._store.async_save(serialized)
-
-            verified_data = await Store(
-                self._store.hass,
-                STORAGE_VERSION,
-                DOMAIN,
-                atomic_writes=True,
-            ).async_load()
-            if verified_data != serialized:
-                raise KitchenManagerStorageError(
-                    "Kitchen Manager storage write could not be verified; "
-                    "the in-memory inventory was not updated"
-                )
-
+            await self._async_write_snapshot(snapshot)
             self._data = snapshot
+            async_dispatcher_send(self._store.hass, INVENTORY_UPDATED_SIGNAL)
+
+    async def async_update(
+        self,
+        mutator: Callable[[KitchenManagerData], tuple[_Result, bool]],
+    ) -> _Result:
+        """Serialize a read-modify-write operation and commit its snapshot."""
+        async with self._write_lock:
+            snapshot = self.data
+            result, changed = mutator(snapshot)
+            if not changed:
+                return deepcopy(result)
+
+            await self._async_write_snapshot(snapshot)
+            self._data = snapshot
+            async_dispatcher_send(self._store.hass, INVENTORY_UPDATED_SIGNAL)
+            return deepcopy(result)
+
+    async def _async_write_snapshot(self, snapshot: KitchenManagerData) -> None:
+        """Persist a snapshot and verify its envelope through a fresh Store."""
+        serialized = snapshot.to_dict()
+        await self._store.async_save(serialized)
+
+        verified_data = await Store(
+            self._store.hass,
+            STORAGE_VERSION,
+            DOMAIN,
+            atomic_writes=True,
+            serialize_in_event_loop=False,
+        ).async_load()
+        if verified_data != serialized:
+            raise KitchenManagerStorageError(
+                "Kitchen Manager storage write could not be verified; "
+                "the in-memory inventory was not updated"
+            )
 
     @staticmethod
     def _storage_exists_or_was_quarantined(path: Path) -> bool:

@@ -1,0 +1,216 @@
+create_product:
+  name: Create product
+  description: Add a product to the local catalogue.
+  fields:
+    name:
+      required: true
+      example: Chopped tomatoes
+      selector:
+        text:
+    brand:
+      example: Brand A
+      selector:
+        text:
+    barcode:
+      example: "0123456789012"
+      selector:
+        text:
+    package_size:
+      example: 400
+      selector:
+        number:
+          min: 0
+          step: any
+          mode: box
+    package_unit:
+      example: g
+      selector:
+        text:
+    ingredient_name:
+      example: Chopped tomatoes
+      selector:
+        text:
+update_product:
+  name: Update product
+  description: Update product details without changing inventory or stock history.
+  fields:
+    product_id:
+      required: true
+      example: 13c6bcedf06d4d6990c22789f975d420
+      selector:
+        text:
+    name:
+      selector:
+        text:
+    brand:
+      selector:
+        text:
+    barcode:
+      selector:
+        text:
+    package_size:
+      selector:
+        number:
+          min: 0
+          step: any
+          mode: box
+    package_unit:
+      selector:
+        text:
+    ingredient_name:
+      selector:
+        text:
+find_product:
+  name: Find product
+  description: Search product names and brands case-insensitively, or match a barcode.
+  fields:
+    search_term:
+      required: true
+      example: tomatoes
+      selector:
+        text:
+add_stock:
+  name: Add stock
+  description: Add stock to one storage location.
+  fields:
+    product_id:
+      example: 13c6bcedf06d4d6990c22789f975d420
+      selector:
+        text:
+    barcode:
+      example: "0123456789012"
+      selector:
+        text:
+    quantity:
+      required: true
+      example: 2
+      selector:
+        number:
+          min: 0
+          step: any
+          mode: box
+    location:
+      required: true
+      selector:
+        select:
+          options:
+            - fridge
+            - freezer
+            - cupboard
+            - other
+    operation_id:
+      example: grocery-delivery-2026-11-09-milk
+      selector:
+        text:
+consume_stock:
+  name: Consume stock
+  description: Consume stock. If location is omitted, stock must exist in only one location.
+  fields:
+    product_id:
+      selector:
+        text:
+    barcode:
+      selector:
+        text:
+    quantity:
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 0
+          step: any
+          mode: box
+    location:
+      selector:
+        select:
+          options:
+            - fridge
+            - freezer
+            - cupboard
+            - other
+    operation_id:
+      selector:
+        text:
+set_stock:
+  name: Set stock
+  description: Set the exact stock quantity at one storage location.
+  fields:
+    product_id:
+      selector:
+        text:
+    barcode:
+      selector:
+        text:
+    quantity:
+      required: true
+      example: 0
+      selector:
+        number:
+          min: 0
+          step: any
+          mode: box
+    location:
+      required: true
+      selector:
+        select:
+          options:
+            - fridge
+            - freezer
+            - cupboard
+            - other
+    operation_id:
+      selector:
+        text:
+get_stock:
+  name: Get stock
+  description: Get stock for one product or all products matching a search term.
+  fields:
+    product_id:
+      selector:
+        text:
+    barcode:
+      selector:
+        text:
+    search_term:
+      selector:
+        text:
+    location:
+      selector:
+        select:
+          options:
+            - fridge
+            - freezer
+            - cupboard
+            - other
+list_inventory:
+  name: List inventory
+  description: List positive stock with optional location and product-name filters.
+  fields:
+    location:
+      selector:
+        select:
+          options:
+            - fridge
+            - freezer
+            - cupboard
+            - other
+    product_name:
+      selector:
+        text:
+get_stock_history:
+  name: Get stock history
+  description: Return recent stock transactions, newest first, with a maximum limit of 200.
+  fields:
+    product_id:
+      selector:
+        text:
+    barcode:
+      selector:
+        text:
+    limit:
+      default: 50
+      selector:
+        number:
+          min: 1
+          max: 200
+          mode: slider

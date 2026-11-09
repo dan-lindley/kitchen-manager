@@ -5,7 +5,7 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.kitchen_manager.const import DOMAIN
-from custom_components.kitchen_manager.storage import KitchenManagerStorage
+from custom_components.kitchen_manager.inventory import InventoryEngine
 
 
 async def test_setup_and_unload(
@@ -17,7 +17,7 @@ async def test_setup_and_unload(
 
     assert await hass.config_entries.async_setup(entry.entry_id)
     assert entry.state is ConfigEntryState.LOADED
-    assert isinstance(entry.runtime_data, KitchenManagerStorage)
+    assert isinstance(entry.runtime_data, InventoryEngine)
     assert entry.runtime_data.data.products == {}
     assert await hass.config_entries.async_unload(entry.entry_id)
 

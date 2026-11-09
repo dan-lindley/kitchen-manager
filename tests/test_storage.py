@@ -1,16 +1,22 @@
 """Tests for persistent integration storage."""
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
+from custom_components.kitchen_manager.const import DOMAIN, STORAGE_VERSION
+from custom_components.kitchen_manager.inventory import InventoryEngine
 from custom_components.kitchen_manager.models import (
     Ingredient,
     InventoryItem,
     KitchenManagerData,
     Product,
+    StorageLocation,
+    TransactionType,
 )
 from custom_components.kitchen_manager.storage import (
     KitchenManagerStorage,
@@ -34,7 +40,9 @@ def _make_data(quantity: float) -> KitchenManagerData:
     return KitchenManagerData(
         ingredients={ingredient.id: ingredient},
         products={product.id: product},
-        inventory={product.id: item},
+        inventory={
+            KitchenManagerData.inventory_key(product.id, item.location): item
+        },
     )
 
 
@@ -46,6 +54,65 @@ async def test_data_survives_storage_reload(hass: HomeAssistant) -> None:
     restored = await KitchenManagerStorage(hass).async_load()
 
     assert restored.to_dict() == expected.to_dict()
+
+
+async def test_v1_store_data_is_migrated_and_persisted(
+    hass: HomeAssistant,
+) -> None:
+    """Upgrade the Phase 1 schema and persist the migrated document."""
+    old_data = _make_data(quantity=3).to_dict()
+    old_data["schema_version"] = 1
+    old_data.pop("transactions")
+    old_data.pop("operations")
+    product_id = next(iter(old_data["products"]))
+    legacy_inventory_item = next(iter(old_data["inventory"].values()))
+    old_data["inventory"] = {
+        product_id: legacy_inventory_item
+    }
+    await Store(
+        hass, STORAGE_VERSION, DOMAIN, atomic_writes=True
+    ).async_save(old_data)
+
+    restored = await KitchenManagerStorage(hass).async_load()
+    persisted = await Store(
+        hass, STORAGE_VERSION, DOMAIN, atomic_writes=True
+    ).async_load()
+
+    inventory_key = KitchenManagerData.inventory_key(
+        product_id, StorageLocation.OTHER
+    )
+    assert restored.inventory[inventory_key].quantity == 3
+    assert restored.inventory[inventory_key].location is StorageLocation.OTHER
+    assert persisted is not None
+    assert persisted["schema_version"] == 2
+
+
+async def test_concurrent_stock_updates_are_persisted_without_lost_writes(
+    hass: HomeAssistant,
+) -> None:
+    """Serialize concurrent engine operations through the production Store."""
+    engine = InventoryEngine(KitchenManagerStorage(hass))
+    product = await engine.async_create_product(name="Milk")
+    await asyncio.gather(
+        *(
+            engine.async_change_stock(
+                TransactionType.ADD,
+                product_id=product["id"],
+                quantity=1,
+                location="fridge",
+            )
+            for _ in range(10)
+        )
+    )
+
+    persisted = await KitchenManagerStorage(hass).async_load()
+    item = persisted.inventory[
+        KitchenManagerData.inventory_key(
+            product["id"], StorageLocation.FRIDGE
+        )
+    ]
+    assert item.quantity == 10
+    assert len(persisted.transactions) == 10
 
 
 async def test_corrupt_storage_fails_closed(hass: HomeAssistant) -> None:

@@ -6,5 +6,99 @@
         "description": "Set up a local household food inventory. No external account is required."
       }
     }
+  },
+  "services": {
+    "create_product": {
+      "name": "Create product",
+      "description": "Add a product to the local catalogue.",
+      "fields": {
+        "name": {"name": "Name", "description": "Product name."},
+        "brand": {"name": "Brand", "description": "Optional product brand."},
+        "barcode": {"name": "Barcode", "description": "Optional unique barcode."},
+        "package_size": {"name": "Package size", "description": "Optional package size."},
+        "package_unit": {"name": "Package unit", "description": "Unit for package size."},
+        "ingredient_name": {"name": "Generic ingredient", "description": "Optional shared ingredient name."}
+      }
+    },
+    "update_product": {
+      "name": "Update product",
+      "description": "Update product details without changing inventory or stock history.",
+      "fields": {
+        "product_id": {"name": "Product ID", "description": "Product to update."},
+        "name": {"name": "Name", "description": "New product name."},
+        "brand": {"name": "Brand", "description": "New product brand."},
+        "barcode": {"name": "Barcode", "description": "New unique barcode."},
+        "package_size": {"name": "Package size", "description": "New package size."},
+        "package_unit": {"name": "Package unit", "description": "New package unit."},
+        "ingredient_name": {"name": "Generic ingredient", "description": "Shared ingredient name."}
+      }
+    },
+    "find_product": {
+      "name": "Find product",
+      "description": "Search product names and brands case-insensitively, or match a barcode.",
+      "fields": {
+        "search_term": {"name": "Search term", "description": "Barcode or name/brand substring."}
+      }
+    },
+    "add_stock": {
+      "name": "Add stock",
+      "description": "Add stock to one storage location.",
+      "fields": {
+        "product_id": {"name": "Product ID", "description": "Internal product ID."},
+        "barcode": {"name": "Barcode", "description": "Product barcode."},
+        "quantity": {"name": "Quantity", "description": "Positive quantity to add."},
+        "location": {"name": "Location", "description": "Storage location."},
+        "operation_id": {"name": "Operation ID", "description": "Optional idempotency key."}
+      }
+    },
+    "consume_stock": {
+      "name": "Consume stock",
+      "description": "Consume stock; specify a location when stock is held in multiple locations.",
+      "fields": {
+        "product_id": {"name": "Product ID", "description": "Internal product ID."},
+        "barcode": {"name": "Barcode", "description": "Product barcode."},
+        "quantity": {"name": "Quantity", "description": "Positive quantity to consume."},
+        "location": {"name": "Location", "description": "Optional storage location."},
+        "operation_id": {"name": "Operation ID", "description": "Optional idempotency key."}
+      }
+    },
+    "set_stock": {
+      "name": "Set stock",
+      "description": "Set the exact stock quantity at one storage location.",
+      "fields": {
+        "product_id": {"name": "Product ID", "description": "Internal product ID."},
+        "barcode": {"name": "Barcode", "description": "Product barcode."},
+        "quantity": {"name": "Quantity", "description": "New non-negative quantity."},
+        "location": {"name": "Location", "description": "Storage location."},
+        "operation_id": {"name": "Operation ID", "description": "Optional idempotency key."}
+      }
+    },
+    "get_stock": {
+      "name": "Get stock",
+      "description": "Get stock by product ID, barcode, or search term.",
+      "fields": {
+        "product_id": {"name": "Product ID", "description": "Internal product ID."},
+        "barcode": {"name": "Barcode", "description": "Product barcode."},
+        "search_term": {"name": "Search term", "description": "Name, brand, or barcode search."},
+        "location": {"name": "Location", "description": "Optional storage location filter."}
+      }
+    },
+    "list_inventory": {
+      "name": "List inventory",
+      "description": "List positive stock with optional filters.",
+      "fields": {
+        "location": {"name": "Location", "description": "Optional storage location filter."},
+        "product_name": {"name": "Product name", "description": "Case-insensitive name filter."}
+      }
+    },
+    "get_stock_history": {
+      "name": "Get stock history",
+      "description": "Return recent stock transactions, newest first.",
+      "fields": {
+        "product_id": {"name": "Product ID", "description": "Optional internal product ID filter."},
+        "barcode": {"name": "Barcode", "description": "Optional barcode filter."},
+        "limit": {"name": "Limit", "description": "Maximum transaction count, up to 200."}
+      }
+    }
   }
 }
