@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 from enum import StrEnum
+import json
 import math
+import re
 from typing import Any
 
 from .const import DATA_SCHEMA_VERSION
@@ -37,6 +39,39 @@ class VerificationStatus(StrEnum):
     UNVERIFIED = "unverified"
     ESTIMATED = "estimated"
     VERIFIED = "verified"
+
+
+@dataclass(slots=True)
+class StorageLocationRecord:
+    """A managed storage location with a stable identifier and editable label."""
+
+    id: str
+    name: str
+
+    def __post_init__(self) -> None:
+        self.id = _validate_text(self.id, "location.id", maximum=64)
+        self.name = _validate_text(self.name, "location.name", maximum=64)
+        if any(ord(char) < 32 for char in self.name):
+            raise ModelValidationError("location.name must be printable")
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Any) -> StorageLocationRecord:
+        if not isinstance(value, dict):
+            raise ModelValidationError("location must be an object")
+        try:
+            return cls(**value)
+        except TypeError as err:
+            raise ModelValidationError("location has an invalid shape") from err
+
+
+def _default_locations() -> dict[str, StorageLocationRecord]:
+    return {
+        location.value: StorageLocationRecord(location.value, location.value.title())
+        for location in StorageLocation
+    }
 
 
 class TransactionType(StrEnum):
@@ -644,6 +679,7 @@ class KitchenManagerData:
     meals: dict[str, Meal] = field(default_factory=dict)
     recurrences: dict[str, RecurrenceRule] = field(default_factory=dict)
     planner: dict[str, PlannerEntry] = field(default_factory=dict)
+    locations: dict[str, StorageLocationRecord] = field(default_factory=_default_locations)
 
     @staticmethod
     def inventory_key(product_id: str, location: StorageLocation | str) -> str:
@@ -652,7 +688,7 @@ class KitchenManagerData:
 
     def validate(self) -> None:
         """Validate record keys, references, and unique barcodes."""
-        for collection_name in ("ingredients", "products", "inventory"):
+        for collection_name in ("ingredients", "products", "inventory", "locations"):
             collection = getattr(self, collection_name)
             if not isinstance(collection, dict):
                 raise ModelValidationError(f"{collection_name} must be an object")
@@ -673,6 +709,21 @@ class KitchenManagerData:
                 raise ModelValidationError(
                     f"product {product.id} references an unknown ingredient"
                 )
+            if self.locations and str(product.default_storage_location) not in self.locations:
+                raise ModelValidationError(
+                    f"product {product.id} references an unknown storage location"
+                )
+        location_names: set[str] = set()
+        for key, location in self.locations.items():
+            if not isinstance(key, str) or not isinstance(location, StorageLocationRecord):
+                raise ModelValidationError("locations contains an invalid record")
+            StorageLocationRecord.from_dict(location.to_dict())
+            if key != location.id:
+                raise ModelValidationError("location key does not match its id")
+            normalized_name = location.name.casefold()
+            if normalized_name in location_names:
+                raise ModelValidationError("storage location names must be unique")
+            location_names.add(normalized_name)
         barcodes = [
             product.barcode
             for product in self.products.values()
@@ -692,6 +743,10 @@ class KitchenManagerData:
                 raise ModelValidationError(
                     f"inventory references unknown product {item.product_id}"
                 )
+            if self.locations and str(item.location) not in self.locations:
+                raise ModelValidationError(
+                    f"inventory references unknown location {item.location}"
+                )
         if not isinstance(self.transactions, list):
             raise ModelValidationError("transactions must be a list")
         transaction_ids: set[str] = set()
@@ -707,6 +762,10 @@ class KitchenManagerData:
             if transaction.product_id not in self.products:
                 raise ModelValidationError(
                     f"transaction references unknown product {transaction.product_id}"
+                )
+            if self.locations and str(transaction.location) not in self.locations:
+                raise ModelValidationError(
+                    f"transaction references unknown location {transaction.location}"
                 )
         prior_by_location: dict[str, float] = {}
         latest_by_location: dict[str, float] = {}
@@ -824,6 +883,9 @@ class KitchenManagerData:
                 key: item.to_dict() for key, item in self.recurrences.items()
             },
             "planner": {key: item.to_dict() for key, item in self.planner.items()},
+            "locations": {
+                key: item.to_dict() for key, item in self.locations.items()
+            },
         }
 
     @classmethod
@@ -840,6 +902,8 @@ class KitchenManagerData:
             return cls._migrate_v3_data(value)
         if version == 4:
             return cls._migrate_v4_data(value)
+        if version == 5:
+            return cls._migrate_v5_data(value)
         if version != DATA_SCHEMA_VERSION:
             raise ModelValidationError(
                 f"unsupported Kitchen Manager data version: {version}"
@@ -854,6 +918,7 @@ class KitchenManagerData:
             "meals",
             "recurrences",
             "planner",
+            "locations",
         }
         if set(value) != expected_keys:
             raise ModelValidationError("Kitchen Manager data has an invalid shape")
@@ -867,6 +932,7 @@ class KitchenManagerData:
             "meals",
             "recurrences",
             "planner",
+            "locations",
         ):
             collection = value.get(name)
             if not isinstance(collection, dict):
@@ -910,6 +976,10 @@ class KitchenManagerData:
                 key: PlannerEntry.from_dict(item)
                 for key, item in records["planner"].items()
             },
+            locations={
+                key: StorageLocationRecord.from_dict(item)
+                for key, item in records["locations"].items()
+            },
         )
         data.validate()
         return data
@@ -945,6 +1015,7 @@ class KitchenManagerData:
             inventory=migrated_inventory,
         )
         cls._infer_default_locations(data)
+        cls._migrate_legacy_locations(data)
         data.validate()
         return data
 
@@ -992,6 +1063,7 @@ class KitchenManagerData:
             },
         )
         cls._infer_default_locations(data)
+        cls._migrate_legacy_locations(data)
         data.validate()
         return data
 
@@ -1042,6 +1114,7 @@ class KitchenManagerData:
             },
         )
         cls._infer_default_locations(data)
+        cls._migrate_legacy_locations(data)
         data.validate()
         return data
 
@@ -1085,8 +1158,181 @@ class KitchenManagerData:
                 for key, item in value["operations"].items()
             },
         )
+        cls._migrate_legacy_locations(data)
         data.validate()
         return data
+
+    @classmethod
+    def _migrate_v5_data(cls, value: dict[str, Any]) -> KitchenManagerData:
+        """Add managed stable location IDs while preserving all inventory records."""
+        expected_keys = {
+            "schema_version",
+            "ingredients",
+            "products",
+            "inventory",
+            "transactions",
+            "operations",
+            "meals",
+            "recurrences",
+            "planner",
+        }
+        if not isinstance(value, dict) or set(value) != expected_keys:
+            raise ModelValidationError("version 5 data has an invalid shape")
+        for name in expected_keys - {"schema_version", "transactions"}:
+            if not isinstance(value[name], dict):
+                raise ModelValidationError(f"{name} must be an object")
+        if not isinstance(value["transactions"], list):
+            raise ModelValidationError("transactions must be a list")
+        data = cls(
+            ingredients={
+                key: Ingredient.from_dict(item)
+                for key, item in value["ingredients"].items()
+            },
+            products={
+                key: Product.from_dict(item)
+                for key, item in value["products"].items()
+            },
+            inventory={
+                key: InventoryItem.from_dict(item)
+                for key, item in value["inventory"].items()
+            },
+            transactions=[
+                StockTransaction.from_dict(item) for item in value["transactions"]
+            ],
+            operations={
+                key: OperationRecord.from_dict(item)
+                for key, item in value["operations"].items()
+            },
+            meals={
+                key: Meal.from_dict(item) for key, item in value["meals"].items()
+            },
+            recurrences={
+                key: RecurrenceRule.from_dict(item)
+                for key, item in value["recurrences"].items()
+            },
+            planner={
+                key: PlannerEntry.from_dict(item) for key, item in value["planner"].items()
+            },
+        )
+        cls._migrate_legacy_locations(data)
+        data.validate()
+        return data
+
+    @staticmethod
+    def _migrate_legacy_locations(data: KitchenManagerData) -> None:
+        """Convert historical location labels into managed stable IDs."""
+        names = [
+            str(product.default_storage_location)
+            for product in data.products.values()
+        ] + [
+            str(item.location) for item in data.inventory.values()
+        ] + [
+            str(transaction.location) for transaction in data.transactions
+        ]
+        aliases: dict[str, str] = {}
+        location_map = {
+            name.casefold(): identifier
+            for identifier, name in (
+                (record.id, record.name) for record in data.locations.values()
+            )
+        }
+        for raw_name in names:
+            normalized = raw_name.casefold()
+            if normalized in location_map:
+                aliases[raw_name] = location_map[normalized]
+                continue
+            identifier = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-") or "location"
+            identifier = identifier[:64]
+            suffix = 2
+            base_identifier = identifier
+            while identifier in data.locations:
+                identifier = f"{base_identifier[:58]}-{suffix}"
+                suffix += 1
+            record = StorageLocationRecord(identifier, raw_name)
+            data.locations[identifier] = record
+            location_map[normalized] = identifier
+            aliases[raw_name] = identifier
+
+        def resolve(value: Any) -> str:
+            raw_name = str(value)
+            return aliases.get(raw_name) or location_map[raw_name.casefold()]
+
+        for product in data.products.values():
+            product.default_storage_location = resolve(product.default_storage_location)
+
+        original_inventory = list(data.inventory.values())
+        merged_inventory: dict[str, InventoryItem] = {}
+        for item in original_inventory:
+            target = resolve(item.location)
+            key = KitchenManagerData.inventory_key(item.product_id, target)
+            existing = merged_inventory.get(key)
+            if existing is None:
+                item.location = target
+                merged_inventory[key] = item
+            else:
+                existing.quantity += item.quantity
+                if item.updated_at > existing.updated_at:
+                    existing.updated_at = item.updated_at
+                    existing.verification_status = item.verification_status
+        data.inventory = merged_inventory
+
+        original_transactions = sorted(
+            data.transactions,
+            key=lambda item: item.timestamp,
+        )
+        local_quantities: dict[tuple[str, str], float] = {}
+        initial_quantities: dict[tuple[str, str], float] = {}
+        for transaction in original_transactions:
+            target = resolve(transaction.location)
+            source_key = (transaction.product_id, str(transaction.location))
+            aggregate_key = (transaction.product_id, target)
+            if source_key not in local_quantities:
+                initial_quantities[aggregate_key] = (
+                    initial_quantities.get(aggregate_key, 0)
+                    + transaction.previous_quantity
+                )
+                local_quantities[source_key] = transaction.previous_quantity
+        aggregate_quantities: dict[tuple[str, str], float] = {}
+        for transaction in original_transactions:
+            old_location = str(transaction.location)
+            target = resolve(old_location)
+            old_key = (transaction.product_id, old_location)
+            aggregate_key = (transaction.product_id, target)
+            local_before = local_quantities[old_key]
+            old_new_quantity = transaction.new_quantity
+            total_before = aggregate_quantities.setdefault(
+                aggregate_key, initial_quantities[aggregate_key]
+            )
+            delta = old_new_quantity - local_before
+            total_after = total_before + delta
+            transaction.previous_quantity = total_before
+            transaction.new_quantity = total_after
+            transaction.quantity_changed = delta
+            transaction.location = target
+            local_quantities[old_key] = old_new_quantity
+            aggregate_quantities[aggregate_key] = total_after
+        data.transactions = original_transactions
+
+        transactions_by_id = {item.id: item for item in data.transactions}
+        for operation in data.operations.values():
+            transaction_id = operation.result.get("transaction_id")
+            transaction = transactions_by_id.get(transaction_id)
+            if transaction is None:
+                continue
+            operation.result.setdefault("location", str(transaction.location))
+            operation.result["location_id"] = str(transaction.location)
+            operation.result["quantity"] = transaction.new_quantity
+            try:
+                fingerprint = json.loads(operation.fingerprint)
+            except json.JSONDecodeError as err:
+                raise ModelValidationError(
+                    "legacy operation fingerprint is invalid"
+                ) from err
+            if fingerprint.get("location") is not None:
+                fingerprint["location"] = resolve(fingerprint["location"])
+                operation.fingerprint = json.dumps(
+                    fingerprint, sort_keys=True, separators=(",", ":")
+                )
 
     @staticmethod
     def _infer_default_locations(data: KitchenManagerData) -> None:

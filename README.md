@@ -13,14 +13,20 @@ engine and persistent store as the integration actions.
 
 The current panel supports:
 
-- Searching the local catalogue by product name, brand, or barcode.
+- Searching the local catalogue by product name, brand, or barcode in a
+  compact, sortable inventory table with location and low-stock filters.
 - Creating and editing products, including optional descriptions and reorder
   thresholds.
-- Viewing stock across storage locations, adding stock, consuming stock, and
-  correcting quantities.
-- Reviewing the latest 30 stock transactions.
+- Opening a product detail dialog to view stock, add/consume/correct quantities,
+  edit product details, and review recent transactions.
 - Saving a default location per product and using it automatically for stock
-  additions and corrections. A one-off location can be entered as an override.
+  additions and corrections. A one-off managed location can be selected as an
+  override.
+- Managing storage locations in **Settings**. Location identifiers remain
+  stable when display names change, and locations referenced by products,
+  stock, or transaction history cannot be deleted.
+- Browsing recipes in a searchable, compact, alphabetically sorted tile grid
+  with effort/time filters and 25-meal pagination.
 
 Products below their optional reorder threshold are highlighted, including
 products with no stock. The panel does not expose a public inventory endpoint.
@@ -28,10 +34,11 @@ It registers one sidebar panel for the single Kitchen Manager config entry and
 removes the panel when that entry unloads.
 
 Storage locations include fridge, freezer, cupboard, and other, and can also
-be household-defined values such as `pantry` or `garage fridge`. Previously
-used locations are suggested in the product and stock forms. For consumption,
-leaving location blank retains the existing safe behavior: stock must be in
-only one location, otherwise the user must choose one.
+be added for household needs such as `pantry` or `garage fridge`. Product and
+stock forms use the managed location list, and stock additions default to the
+product's saved location. For consumption, leaving location blank retains the
+existing safe behavior: stock must be in only one location, otherwise the user
+must choose one. Expiry dates are not currently tracked.
 
 ## Meals and planner
 
@@ -84,10 +91,12 @@ shopping list.
 4. Download **Kitchen Manager**, restart Home Assistant, and add the integration
    from **Settings → Devices & services → Add integration**.
 
-To update an existing HACS installation, open **HACS → Integrations**, select
-Kitchen Manager, choose **Update** (or download the pending update), and restart
-Home Assistant. Your saved products, stock, meals, recurrence rules, and
-planner selections are retained and migrated automatically.
+To update an existing HACS installation to **0.4.0**, open **HACS →
+Integrations**, select Kitchen Manager, choose **Update** (or download the
+pending update), and restart Home Assistant. Your saved products, stock,
+meals, recurrence rules, and planner selections are retained. The integration
+automatically migrates saved storage-location labels to stable location IDs;
+it does not modify Home Assistant's Recorder database.
 
 ### Manual
 

@@ -74,7 +74,7 @@ async def websocket_catalog(
         products = _engine(hass).list_products(msg.get("search_term"))
     except (InventoryError, ModelValidationError) as err:
         _raise_user_error(err)
-    locations = _engine(hass).list_locations()
+    locations = _engine(hass).list_location_records()
     connection.send_result(
         msg["id"],
         {"products": products, "count": len(products), "locations": locations},
@@ -112,6 +112,69 @@ async def websocket_create_product(
     except (InventoryError, ModelValidationError) as err:
         _raise_user_error(err)
     connection.send_result(msg["id"], {"product": product})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/location/create",
+        vol.Required("name"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def websocket_create_location(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a managed storage location."""
+    try:
+        location = await _engine(hass).async_create_location(name=msg["name"])
+    except (InventoryError, ModelValidationError) as err:
+        _raise_user_error(err)
+    connection.send_result(msg["id"], {"location": location})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/location/rename",
+        vol.Required("location_id"): cv.string,
+        vol.Required("name"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def websocket_rename_location(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Rename a managed storage location without changing its ID."""
+    try:
+        location = await _engine(hass).async_rename_location(
+            location_id=msg["location_id"], name=msg["name"]
+        )
+    except (InventoryError, ModelValidationError) as err:
+        _raise_user_error(err)
+    connection.send_result(msg["id"], {"location": location})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/location/delete",
+        vol.Required("location_id"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def websocket_delete_location(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete an unused managed storage location."""
+    try:
+        await _engine(hass).async_delete_location(msg["location_id"])
+    except (InventoryError, ModelValidationError) as err:
+        _raise_user_error(err)
+    connection.send_result(msg["id"], {"success": True})
 
 
 @websocket_api.websocket_command(
@@ -368,6 +431,9 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
         websocket_catalog,
         websocket_create_product,
         websocket_update_product,
+        websocket_create_location,
+        websocket_rename_location,
+        websocket_delete_location,
         websocket_change_stock,
         websocket_history,
         websocket_meals,

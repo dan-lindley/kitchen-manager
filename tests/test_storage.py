@@ -64,6 +64,10 @@ async def test_v1_store_data_is_migrated_and_persisted(
     old_data["schema_version"] = 1
     old_data.pop("transactions")
     old_data.pop("operations")
+    old_data.pop("meals")
+    old_data.pop("recurrences")
+    old_data.pop("planner")
+    old_data.pop("locations")
     product_id = next(iter(old_data["products"]))
     legacy_inventory_item = next(iter(old_data["inventory"].values()))
     old_data["inventory"] = {
@@ -82,13 +86,10 @@ async def test_v1_store_data_is_migrated_and_persisted(
         product_id, StorageLocation.OTHER
     )
     assert restored.inventory[inventory_key].quantity == 3
-    assert restored.inventory[inventory_key].location is StorageLocation.OTHER
-    assert (
-        restored.products[product_id].default_storage_location
-        is StorageLocation.OTHER
-    )
+    assert str(restored.inventory[inventory_key].location) == StorageLocation.OTHER.value
+    assert str(restored.products[product_id].default_storage_location) == StorageLocation.OTHER.value
     assert persisted is not None
-    assert persisted["schema_version"] == 5
+    assert persisted["schema_version"] == 6
 
 
 async def test_concurrent_stock_updates_are_persisted_without_lost_writes(

@@ -18,6 +18,7 @@ from .models import (
     ModelValidationError,
     OperationRecord,
     Product,
+    StorageLocationRecord,
     StorageLocation,
     StockTransaction,
     TransactionType,
@@ -71,6 +72,48 @@ def _location(value: str) -> StorageLocation | str:
 def _product_dict(product: Product) -> dict[str, Any]:
     """Serialize a product for an action response."""
     return product.to_dict()
+
+
+def _resolve_location(data: KitchenManagerData, value: str) -> str:
+    """Resolve a stable location ID or a case-insensitive display name."""
+    if not isinstance(value, str) or not value.strip():
+        raise InventoryError("Select a configured storage location.")
+    if value in data.locations:
+        return value
+    matching = [
+        item.id
+        for item in data.locations.values()
+        if item.name.casefold() == value.strip().casefold()
+    ]
+    if matching:
+        return matching[0]
+    raise InventoryError(f"Unknown storage location: {value}")
+
+
+def _resolve_or_create_location(data: KitchenManagerData, value: str) -> str:
+    """Keep legacy inventory calls compatible without creating name duplicates."""
+    try:
+        return _resolve_location(data, value)
+    except InventoryError:
+        name = value.strip()
+        if not name:
+            raise
+        identifier = _location_identifier(name, data.locations)
+        location = StorageLocationRecord(identifier, name)
+        data.locations[identifier] = location
+        return identifier
+
+
+def _location_identifier(name: str, locations: dict[str, StorageLocationRecord]) -> str:
+    """Create a stable, readable ID that does not depend on later renaming."""
+    identifier = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-") or "location"
+    identifier = identifier[:48]
+    base = identifier
+    suffix = 2
+    while identifier in locations:
+        identifier = f"{base[:48]}-{suffix}"
+        suffix += 1
+    return identifier
 
 
 class InventoryEngine:
@@ -152,6 +195,9 @@ class InventoryEngine:
                     data.ingredients[ingredient.id] = ingredient
                 product.ingredient_id = ingredient.id
 
+            product.default_storage_location = _resolve_or_create_location(
+                data, str(product.default_storage_location)
+            )
             data.products[product.id] = product
             return _product_dict(product), True
 
@@ -247,8 +293,8 @@ class InventoryEngine:
             if reorder_threshold is not None:
                 updated.reorder_threshold = reorder_threshold
             if default_storage_location is not None:
-                updated.default_storage_location = _location(
-                    default_storage_location
+                updated.default_storage_location = _resolve_or_create_location(
+                    data, default_storage_location
                 )
             if "reorder_threshold" in clear_fields:
                 updated.reorder_threshold = None
@@ -316,6 +362,7 @@ class InventoryEngine:
             for product in sorted(products, key=lambda item: item.name.casefold())
             if needle in product.name.casefold()
             or needle in (product.brand or "").casefold()
+            or needle in (product.barcode or "").casefold()
         ]
 
     def find_products(self, query: str) -> list[dict[str, Any]]:
@@ -338,7 +385,10 @@ class InventoryEngine:
         for product in products:
             stock = sorted(
                 (
-                    item.to_dict()
+                    {
+                        **item.to_dict(),
+                        "location_name": data.locations[str(item.location)].name,
+                    }
                     for item in data.inventory.values()
                     if item.product_id == product.id
                 ),
@@ -348,7 +398,12 @@ class InventoryEngine:
             threshold = product.reorder_threshold
             results.append(
                 {
-                    "product": _product_dict(product),
+                    "product": {
+                        **_product_dict(product),
+                        "default_storage_location_name": data.locations[
+                            str(product.default_storage_location)
+                        ].name,
+                    },
                     "ingredient_name": (
                         data.ingredients[product.ingredient_id].name
                         if product.ingredient_id is not None
@@ -364,15 +419,86 @@ class InventoryEngine:
         return results
 
     def list_locations(self) -> list[str]:
-        """Return standard and previously used product storage locations."""
-        locations = {location.value for location in StorageLocation}
+        """Return configured location names for legacy callers."""
+        return [
+            item["name"] for item in self.list_location_records()
+        ]
+
+    def list_location_records(self) -> list[dict[str, str]]:
+        """Return configured locations with their stable IDs."""
         data = self._storage.data
-        locations.update(
-            str(product.default_storage_location)
-            for product in data.products.values()
-        )
-        locations.update(str(item.location) for item in data.inventory.values())
-        return sorted(locations, key=str.casefold)
+        return [
+            location.to_dict()
+            for location in sorted(
+                data.locations.values(), key=lambda item: item.name.casefold()
+            )
+        ]
+
+    async def async_create_location(self, *, name: str) -> dict[str, str]:
+        """Create a configured storage location with a unique display name."""
+        if not isinstance(name, str) or not name.strip() or name != name.strip():
+            raise InventoryError("Enter a non-empty trimmed location name.")
+        if len(name) > 64 or any(ord(char) < 32 for char in name):
+            raise InventoryError("Location names must be at most 64 printable characters.")
+
+        def mutate(data: KitchenManagerData) -> tuple[dict[str, str], bool]:
+            if any(item.name.casefold() == name.casefold() for item in data.locations.values()):
+                raise InventoryError(f"A location named {name} already exists.")
+            identifier = _location_identifier(name, data.locations)
+            location = StorageLocationRecord(identifier, name)
+            data.locations[identifier] = location
+            return location.to_dict(), True
+
+        return await self._storage.async_update(mutate)
+
+    async def async_rename_location(
+        self, *, location_id: str, name: str
+    ) -> dict[str, str]:
+        """Rename a configured location without changing its stable ID."""
+        if not isinstance(name, str) or not name.strip() or name != name.strip():
+            raise InventoryError("Enter a non-empty trimmed location name.")
+        if len(name) > 64 or any(ord(char) < 32 for char in name):
+            raise InventoryError("Location names must be at most 64 printable characters.")
+
+        def mutate(data: KitchenManagerData) -> tuple[dict[str, str], bool]:
+            location = data.locations.get(location_id)
+            if location is None:
+                raise InventoryError("That storage location no longer exists.")
+            if any(
+                item.id != location_id and item.name.casefold() == name.casefold()
+                for item in data.locations.values()
+            ):
+                raise InventoryError(f"A location named {name} already exists.")
+            if location.name == name:
+                return location.to_dict(), False
+            location.name = name
+            return location.to_dict(), True
+
+        return await self._storage.async_update(mutate)
+
+    async def async_delete_location(self, location_id: str) -> None:
+        """Delete a location only when no product or stock history references it."""
+
+        def mutate(data: KitchenManagerData) -> tuple[None, bool]:
+            if location_id not in data.locations:
+                raise InventoryError("That storage location no longer exists.")
+            referenced = any(
+                str(product.default_storage_location) == location_id
+                for product in data.products.values()
+            ) or any(
+                str(item.location) == location_id for item in data.inventory.values()
+            ) or any(
+                str(item.location) == location_id for item in data.transactions
+            )
+            if referenced:
+                raise InventoryError(
+                    "This location is still used by a product, stock record, or "
+                    "transaction. Reassign or remove those references first."
+                )
+            del data.locations[location_id]
+            return None, True
+
+        await self._storage.async_update(mutate)
 
     def _resolve_product(
         self,
@@ -437,8 +563,15 @@ class InventoryEngine:
             raise InventoryError("operation_id must not be empty")
 
         def mutate(data: KitchenManagerData) -> tuple[dict[str, Any], bool]:
+            if bool(product_id) == bool(barcode):
+                raise InventoryError("Provide exactly one of product_id or barcode")
+            selected_requested_location = (
+                _resolve_or_create_location(data, str(requested_location))
+                if requested_location is not None
+                else None
+            )
             fingerprint = self._fingerprint(
-                operation, product_id, barcode, quantity, requested_location
+                operation, product_id, barcode, quantity, selected_requested_location
             )
             if operation_id is not None and operation_id in data.operations:
                 previous = data.operations[operation_id]
@@ -452,7 +585,7 @@ class InventoryEngine:
             product = self._resolve_product(
                 data, product_id=product_id, barcode=barcode
             )
-            selected_location = requested_location
+            selected_location = selected_requested_location
             if selected_location is None:
                 if operation is not TransactionType.CONSUME:
                     selected_location = product.default_storage_location
@@ -531,12 +664,17 @@ class InventoryEngine:
                 operation_id=operation_id,
             )
             data.transactions.append(transaction)
+            try:
+                location_label = StorageLocation(selected_location).value
+            except ValueError:
+                location_label = data.locations[selected_location].name
             result = {
                 "product_id": product.id,
                 "product_name": product.name,
                 "quantity": new_quantity,
                 "unit": item.unit,
-                "location": str(selected_location),
+                "location": location_label,
+                "location_id": selected_location,
                 "transaction_id": transaction.id,
                 "operation_id": operation_id,
             }
@@ -564,8 +702,10 @@ class InventoryEngine:
             raise InventoryError(
                 "Provide exactly one of product_id, barcode, or search_term"
             )
-        selected_location = _location(location) if location is not None else None
         data = self._storage.data
+        selected_location = (
+            _resolve_location(data, location) if location is not None else None
+        )
         if search_term is not None:
             products = self._find_products(data, search_term)
         else:
@@ -577,14 +717,22 @@ class InventoryEngine:
         result = []
         for product in products:
             stock = [
-                item.to_dict()
+                {
+                    **item.to_dict(),
+                    "location_name": data.locations[str(item.location)].name,
+                }
                 for item in data.inventory.values()
                 if item.product_id == product.id
                 and (selected_location is None or item.location == selected_location)
             ]
             result.append(
                 {
-                    "product": _product_dict(product),
+                    "product": {
+                        **_product_dict(product),
+                        "default_storage_location_name": data.locations[
+                            str(product.default_storage_location)
+                        ].name,
+                    },
                     "stock": sorted(stock, key=lambda item: str(item["location"])),
                 }
             )
@@ -594,9 +742,11 @@ class InventoryEngine:
         self, *, location: str | None = None, product_name: str | None = None
     ) -> list[dict[str, Any]]:
         """List positive stock rows with optional location and name filters."""
-        selected_location = _location(location) if location is not None else None
         needle = product_name.casefold().strip() if product_name else None
         data = self._storage.data
+        selected_location = (
+            _resolve_location(data, location) if location is not None else None
+        )
         result = []
         for item in data.inventory.values():
             if item.quantity <= 0:
@@ -612,6 +762,7 @@ class InventoryEngine:
                     "quantity": item.quantity,
                     "unit": item.unit,
                     "location": str(item.location),
+                    "location_name": data.locations[str(item.location)].name,
                     "updated_at": item.updated_at,
                 }
             )

@@ -203,10 +203,114 @@ async def test_default_location_can_be_changed_without_modifying_stock(
 
     assert first["location"] == "fridge"
     assert next_addition["location"] == "garage fridge"
-    assert {str(item["location"]) for item in stock} == {
-        "fridge",
+    assert {item["location_name"] for item in stock} == {
+        "Fridge",
         "garage fridge",
     }
+
+
+async def test_storage_locations_create_rename_and_persist(
+    engine: InventoryEngine,
+) -> None:
+    """Keep location identifiers stable while names and product associations persist."""
+    location = await engine.async_create_location(name="Pantry")
+    product = await _create_product(
+        engine,
+        name="Rice",
+        default_storage_location=location["id"],
+    )
+    await engine.async_change_stock(
+        TransactionType.ADD,
+        product_id=product["id"],
+        quantity=2,
+    )
+
+    renamed = await engine.async_rename_location(
+        location_id=location["id"],
+        name="Food cupboard",
+    )
+    catalogue = next(
+        row for row in engine.list_products() if row["product"]["id"] == product["id"]
+    )
+
+    assert renamed == {"id": location["id"], "name": "Food cupboard"}
+    assert catalogue["product"]["default_storage_location"] == location["id"]
+    assert catalogue["product"]["default_storage_location_name"] == "Food cupboard"
+    assert catalogue["stock"][0]["location"] == location["id"]
+    assert catalogue["stock"][0]["location_name"] == "Food cupboard"
+    assert any(
+        row["id"] == location["id"] and row["name"] == "Food cupboard"
+        for row in engine.list_location_records()
+    )
+
+
+async def test_storage_location_names_are_case_insensitively_unique(
+    engine: InventoryEngine,
+) -> None:
+    """Prevent duplicate location labels that differ only by case."""
+    await engine.async_create_location(name="Pantry")
+
+    with pytest.raises(InventoryError, match="already exists"):
+        await engine.async_create_location(name="pAnTrY")
+
+
+async def test_referenced_storage_location_cannot_be_deleted(
+    engine: InventoryEngine,
+) -> None:
+    """Keep locations referenced by products, stock, or transaction history."""
+    location = await engine.async_create_location(name="Pantry")
+    product = await _create_product(
+        engine,
+        name="Rice",
+        default_storage_location=location["id"],
+    )
+    await engine.async_change_stock(
+        TransactionType.ADD,
+        product_id=product["id"],
+        quantity=1,
+    )
+
+    with pytest.raises(InventoryError, match="still used"):
+        await engine.async_delete_location(location["id"])
+
+    await engine.async_update_product(
+        product_id=product["id"],
+        default_storage_location="cupboard",
+    )
+    with pytest.raises(InventoryError, match="still used"):
+        await engine.async_delete_location(location["id"])
+
+
+async def test_unused_storage_location_can_be_deleted(engine: InventoryEngine) -> None:
+    """Allow removal of a location with no product or stock references."""
+    location = await engine.async_create_location(name="Temporary")
+
+    await engine.async_delete_location(location["id"])
+
+    assert location["id"] not in {
+        row["id"] for row in engine.list_location_records()
+    }
+
+
+async def test_legacy_location_labels_are_registered_without_case_duplicates(
+    engine: InventoryEngine,
+) -> None:
+    """Preserve old callers that submit a location label instead of a managed ID."""
+    product = await _create_product(
+        engine,
+        name="Beans",
+        default_storage_location="Pantry",
+    )
+    await engine.async_change_stock(
+        TransactionType.ADD,
+        product_id=product["id"],
+        quantity=1,
+        location="pantry",
+    )
+
+    assert len(
+        [row for row in engine.list_location_records() if row["name"].casefold() == "pantry"]
+    ) == 1
 
 
 async def test_add_consume_and_insufficient_stock(engine: InventoryEngine) -> None:

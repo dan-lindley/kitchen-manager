@@ -438,6 +438,7 @@ def test_schema_v4_migrates_without_changing_inventory() -> None:
     old.pop("meals")
     old.pop("recurrences")
     old.pop("planner")
+    old.pop("locations")
 
     migrated = KitchenManagerData.from_dict(old)
 
@@ -448,7 +449,7 @@ def test_schema_v4_migrates_without_changing_inventory() -> None:
     assert migrated.inventory[
         KitchenManagerData.inventory_key(product.id, stock.location)
     ].quantity == 3
-    assert migrated.to_dict()["schema_version"] == 5
+    assert migrated.to_dict()["schema_version"] == 6
 
 
 def test_meal_weekdays_and_planner_dates_are_validated() -> None:

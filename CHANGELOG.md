@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0
+
+- Replaced the inventory cards with a searchable, sortable, filterable table
+  and a product details dialog for stock adjustments, editing, and recent
+  history.
+- Replaced the recipe cards with a compact responsive tile grid, search,
+  effort/time filters, and 25-meal pagination.
+- Added a Settings tab for persistent storage-location creation, renaming, and
+  safe deletion, using stable location IDs and a schema v5-to-v6 migration.
+- Preserved legacy location-name calls while preventing case-only duplicate
+  locations; added location migration, CRUD, rename, and deletion safeguards.
+- Expiry dates are not modeled yet, so the inventory table identifies expiry
+  as not tracked rather than fabricating a value.
+
 ## 0.3.2
 
 - Centralized automatic meal eligibility and selection for planner generation

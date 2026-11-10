@@ -8,27 +8,56 @@ class KitchenManagerPanel extends HTMLElement {
     this._history = [];
     this._meals = [];
     this._planner = { weeks: [] };
-    this._locations = ["cupboard", "fridge", "freezer", "other"];
+    this._locations = [
+      { id: "cupboard", name: "Cupboard" },
+      { id: "fridge", name: "Fridge" },
+      { id: "freezer", name: "Freezer" },
+      { id: "other", name: "Other" },
+    ];
     this._view = "kitchen";
     this._mealIngredients = [];
     this._search = "";
     this._loading = true;
     this._error = "";
     this._modal = null;
+    this._modalError = "";
     this._picker = null;
     this._pickerSaving = false;
     this._returnToPicker = false;
+    this._inventoryPage = 1;
+    this._inventorySort = { key: "name", direction: "asc" };
+    this._locationFilter = "any";
+    this._lowStockFilter = "any";
+    this._mealQuery = "";
+    this._mealPage = 1;
+    this._mealEffort = "any";
+    this._mealMaxTime = "";
     this._onDialogKeydown = (event) => this._handleDialogKeydown(event);
   }
 
-  _locationOptions() {
-    return `<datalist id="storage-locations">${this._locations.map((location) => `<option value="${this._escape(location)}"></option>`).join("")}</datalist>`;
+  _locationOptions(selectedId) {
+    return this._locations.map((location) => `<option value="${this._escape(location.id)}" ${location.id === selectedId ? "selected" : ""}>${this._escape(location.name)}</option>`).join("");
   }
 
   set hass(hass) {
     this._hass = hass;
     if (this.isConnected && this._loading) {
       this._load();
+    }
+  }
+
+  async _loadSettings() {
+    this._loading = true;
+    this._error = "";
+    this._render();
+    try {
+      const catalog = await this._request("catalog");
+      this._locations = catalog.locations || this._locations;
+    } catch (error) {
+      this._error = error.message || "Storage locations could not be loaded.";
+    } finally {
+      this._loading = false;
+      this._render();
     }
   }
 
@@ -99,6 +128,8 @@ class KitchenManagerPanel extends HTMLElement {
       await this._loadMeals();
     } else if (view === "shopping") {
       await this._loadShopping();
+    } else if (view === "settings") {
+      await this._loadSettings();
     } else {
       await this._load("");
     }
@@ -111,6 +142,7 @@ class KitchenManagerPanel extends HTMLElement {
     try {
       const catalog = await this._request("catalog");
       this._products = catalog.products;
+      this._locations = catalog.locations || this._locations;
     } catch (error) {
       this._error = error.message || "Shopping suggestions could not be loaded.";
     } finally {
@@ -127,18 +159,20 @@ class KitchenManagerPanel extends HTMLElement {
     const focusKey = activeElement?.dataset?.focusKey;
     const selectionStart = activeElement?.selectionStart;
     const selectionEnd = activeElement?.selectionEnd;
-    const products = this._products.map((record) => this._productCard(record)).join("");
     const transactions = this._history.map((item) => this._transactionRow(item)).join("");
     const title = {
       kitchen: ["My Kitchen", "Products, stock and recent changes"],
       meals: ["Meals", "Your recipe collection and four-week planner"],
       shopping: ["Shopping", "Suggested purchases from your reorder thresholds"],
+      settings: ["Settings", "Manage storage locations"],
     }[this._view];
     let content = "";
     if (this._view === "kitchen") {
-      content = this._renderKitchen(products, transactions);
+      content = this._renderKitchen(transactions);
     } else if (this._view === "meals") {
       content = this._renderMeals();
+    } else if (this._view === "settings") {
+      content = this._renderSettings();
     } else {
       content = this._renderShopping();
     }
@@ -311,6 +345,37 @@ class KitchenManagerPanel extends HTMLElement {
         .picker-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
         .picker-saving { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; border-radius: inherit; background: color-mix(in srgb, var(--card-background-color, var(--primary-background-color)) 84%, transparent); font-weight: 700; }
         .picker-error { margin: -4px 0 12px; padding: 10px 12px; border-radius: 9px; color: var(--error-color); background: var(--secondary-background-color); }
+        .inventory-toolbar { display: grid; grid-template-columns: minmax(240px, 1fr) repeat(2, minmax(160px, .35fr)) auto; }
+        .table-scroll { overflow-x: auto; border: 1px solid var(--divider-color); border-radius: 12px; background: var(--card-background-color, var(--secondary-background-color)); }
+        .inventory-table { width: 100%; border-collapse: collapse; text-align: left; }
+        .inventory-table th, .inventory-table td { padding: 10px 12px; border-bottom: 1px solid var(--divider-color); vertical-align: middle; }
+        .inventory-table th { white-space: nowrap; color: var(--secondary-text-color); font-size: .82rem; }
+        .inventory-table tr:last-child td { border-bottom: 0; }
+        .inventory-table tbody tr { cursor: pointer; transition: background 120ms ease; }
+        .inventory-table tbody tr:hover, .inventory-table tbody tr:focus-visible { background: var(--secondary-background-color); outline: 2px solid var(--primary-color); outline-offset: -2px; }
+        .table-sort { min-height: 34px; padding: 4px 2px; border: 0; color: inherit; background: transparent; font-size: inherit; text-align: left; }
+        .pagination { display: flex; justify-content: center; align-items: center; gap: 14px; padding: 14px 0 4px; color: var(--secondary-text-color); }
+        .recipe-tools { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(150px, .35fr) minmax(150px, .35fr); gap: 10px; align-items: end; margin: 14px 0; }
+        .recipe-tools label { display: grid; gap: 4px; margin: 0; color: var(--secondary-text-color); font-size: .82rem; }
+        .recipe-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; }
+        .recipe-tile { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; min-height: 84px; padding: 11px 12px; color: var(--primary-text-color); text-align: left; background: var(--card-background-color, var(--secondary-background-color)); border: 1px solid var(--divider-color); border-radius: 12px; }
+        .recipe-tile:hover, .recipe-tile:focus-visible { border-color: var(--primary-color); outline: 2px solid var(--primary-color); outline-offset: 1px; }
+        .recipe-tile strong { overflow-wrap: anywhere; line-height: 1.3; }
+        .recipe-tile span { margin-top: auto; padding-top: 8px; color: var(--secondary-text-color); font-size: .78rem; }
+        .section-toolbar { margin-bottom: 12px; }
+        .location-create { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; max-width: 560px; margin: 14px 0 20px; }
+        .location-create label { grid-column: 1 / -1; margin: 0; }
+        .location-list { max-width: 760px; padding: 0; list-style: none; }
+        .location-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--divider-color); }
+        .location-list li > span:first-child { display: grid; gap: 3px; overflow-wrap: anywhere; }
+        .location-list small { color: var(--secondary-text-color); }
+        .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; margin: 10px 0; }
+        .detail-history { max-height: 230px; overflow: auto; padding-left: 20px; }
+        .recipe-delete { margin-right: auto; }
+        @media (min-width: 601px) and (max-width: 980px) {
+          .recipe-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+          .inventory-toolbar { grid-template-columns: 1fr 1fr; }
+        }
         @keyframes picker-fade { from { opacity: 0; } to { opacity: 1; } }
         @keyframes picker-rise { from { transform: translateY(8px); opacity: .7; } to { transform: translateY(0); opacity: 1; } }
         @media (max-width: 600px) {
@@ -321,6 +386,23 @@ class KitchenManagerPanel extends HTMLElement {
           .history-list li span:last-child { grid-column: 1 / -1; }
           .week-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
           .day-card { min-height: 124px; }
+          .recipe-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+          .recipe-tile { min-height: 78px; padding: 10px; }
+          .recipe-tools, .inventory-toolbar { grid-template-columns: 1fr 1fr; }
+          .recipe-tools label:first-child, .inventory-toolbar input { grid-column: 1 / -1; }
+          .table-scroll { overflow: visible; border: 0; background: transparent; }
+          .inventory-table, .inventory-table tbody { display: block; width: 100%; }
+          .inventory-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
+          .inventory-table tr { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin: 0 0 9px; padding: 10px; border: 1px solid var(--divider-color); border-radius: 12px; background: var(--card-background-color, var(--secondary-background-color)); }
+          .inventory-table td { display: grid; grid-template-columns: minmax(82px, .7fr) 1fr; gap: 8px; padding: 4px 0; border: 0; font-size: .86rem; }
+          .inventory-table td::before { content: attr(data-label); color: var(--secondary-text-color); font-size: .76rem; }
+          .inventory-table td:first-child { grid-column: 1 / -1; font-size: 1rem; }
+          .inventory-table td:first-child::before { content: ""; }
+          .pagination { gap: 8px; font-size: .82rem; }
+          .pagination button { padding-inline: 9px; }
+          .location-list li { align-items: flex-start; }
+          .location-list .actions { justify-content: flex-end; }
+          .detail-grid { grid-template-columns: 1fr; }
           .picker-backdrop { padding: 0; }
           .picker-dialog { width: 100%; height: 100%; max-height: 100dvh; padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom)); border-radius: 0; }
           .picker-heading h2 { font-size: 1.25rem; }
@@ -354,6 +436,7 @@ class KitchenManagerPanel extends HTMLElement {
           <button type="button" data-action="navigate" data-view="kitchen" aria-current="${this._view === "kitchen" ? "page" : "false"}">My Kitchen</button>
           <button type="button" data-action="navigate" data-view="meals" aria-current="${this._view === "meals" ? "page" : "false"}">Meals</button>
           <button type="button" data-action="navigate" data-view="shopping" aria-current="${this._view === "shopping" ? "page" : "false"}">Shopping</button>
+          <button type="button" data-action="navigate" data-view="settings" aria-current="${this._view === "settings" ? "page" : "false"}">Settings</button>
         </nav>
         <div class="error" data-error role="alert" ${this._error ? "" : "hidden"}>${this._escape(this._error)}</div>
         ${this._loading ? `<div class="loading" role="status">Loading ${this._view === "meals" ? "meals and planner" : this._view === "shopping" ? "shopping suggestions" : "kitchen inventory"}…</div>` : content}
@@ -371,13 +454,24 @@ class KitchenManagerPanel extends HTMLElement {
     }
   }
 
-  _renderKitchen(products, transactions) {
+  _renderKitchen(transactions) {
+    const filtered = this._filteredInventory();
+    const pageCount = Math.max(1, Math.ceil(filtered.length / 20));
+    this._inventoryPage = Math.min(this._inventoryPage, pageCount);
+    const pageItems = filtered.slice((this._inventoryPage - 1) * 20, this._inventoryPage * 20);
+    const sortHeader = (key, label) => `<th scope="col"><button class="table-sort" type="button" data-action="sort-inventory" data-sort="${key}" aria-label="Sort by ${label}">${label}${this._inventorySort.key === key ? (this._inventorySort.direction === "asc" ? " ▲" : " ▼") : ""}</button></th>`;
     return `
-      <div class="toolbar">
-        <form class="search" data-form="search">
-          <input name="search" type="search" value="${this._escape(this._search)}" placeholder="Search name, brand or barcode" aria-label="Search products">
-          <button type="submit">Search</button>
-        </form>
+      <div class="toolbar inventory-toolbar">
+        <input data-product-search data-focus-key="product-search" type="search" value="${this._escape(this._search)}" placeholder="Search name, brand or barcode" aria-label="Search products">
+        <select data-location-filter aria-label="Filter by storage location">
+          <option value="any">All locations</option>
+          ${this._locations.map((item) => `<option value="${this._escape(item.id)}" ${this._locationFilter === item.id ? "selected" : ""}>${this._escape(item.name)}</option>`).join("")}
+        </select>
+        <select data-low-stock-filter aria-label="Filter by low-stock status">
+          <option value="any" ${this._lowStockFilter === "any" ? "selected" : ""}>All stock levels</option>
+          <option value="low" ${this._lowStockFilter === "low" ? "selected" : ""}>Low stock</option>
+          <option value="ok" ${this._lowStockFilter === "ok" ? "selected" : ""}>Not low</option>
+        </select>
         <button class="secondary" type="button" data-action="refresh">Refresh</button>
       </div>
       ${!this._products.length ? `
@@ -385,12 +479,86 @@ class KitchenManagerPanel extends HTMLElement {
           <h2>${this._search ? "No matching products" : "Your catalogue is empty"}</h2>
           <p class="muted">${this._search ? "Try another search, or clear the search field." : "Create your first product to start tracking household stock."}</p>
           ${this._search ? `<button class="secondary" type="button" data-action="clear-search">Clear search</button>` : `<button type="button" data-action="create">Add product</button>`}
-        </section>` : ""}
-      <section class="grid" aria-label="Products">${products}</section>
+        </section>` : filtered.length ? `
+      <div class="table-scroll">
+        <table class="inventory-table">
+          <thead><tr>${sortHeader("name", "Product")}${sortHeader("brand", "Brand")}${sortHeader("location", "Default location")}${sortHeader("quantity", "Current stock")}${sortHeader("low", "Status")}${sortHeader("expiry", "Nearest expiry")}</tr></thead>
+          <tbody>${pageItems.map((record) => this._inventoryRow(record)).join("")}</tbody>
+        </table>
+      </div>
+      <div class="pagination" aria-label="Inventory pages">
+        <button class="secondary" type="button" data-action="inventory-previous" ${this._inventoryPage <= 1 ? "disabled" : ""}>Previous</button>
+        <span>Page ${this._inventoryPage} of ${pageCount} — ${filtered.length} products</span>
+        <button class="secondary" type="button" data-action="inventory-next" ${this._inventoryPage >= pageCount ? "disabled" : ""}>Next</button>
+      </div>` : `<section class="empty"><h2>No products match these filters</h2><p class="muted">Try another search or filter.</p><button class="secondary" type="button" data-action="reset-inventory-filters">Clear filters</button></section>`}
       <section class="section history">
         <h2>Recent stock changes</h2>
         ${transactions ? `<ul class="history-list">${transactions}</ul>` : `<p class="muted">No stock changes recorded yet.</p>`}
       </section>`;
+  }
+
+  _filteredInventory() {
+    const query = this._search.trim().toLocaleLowerCase();
+    const filtered = this._products.filter((record) => {
+      const { product } = record;
+      return (!query || [product.name, product.brand, product.barcode]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(query)))
+        && (this._locationFilter === "any" || product.default_storage_location === this._locationFilter)
+        && (this._lowStockFilter === "any" || (this._lowStockFilter === "low") === record.low_stock);
+    });
+    const { key, direction } = this._inventorySort;
+    const value = (record) => ({
+      name: record.product.name.toLocaleLowerCase(),
+      brand: (record.product.brand || "").toLocaleLowerCase(),
+      location: this._locationName(record.product.default_storage_location).toLocaleLowerCase(),
+      quantity: record.total_quantity,
+      low: record.low_stock ? 0 : 1,
+      expiry: "",
+    })[key];
+    return filtered.sort((left, right) => {
+      const a = value(left);
+      const b = value(right);
+      const compare = typeof a === "number" ? a - b : String(a).localeCompare(String(b));
+      return direction === "asc" ? compare : -compare;
+    });
+  }
+
+  _inventoryRow(record) {
+    const product = record.product;
+    return `<tr tabindex="0" role="button" data-action="product-detail" data-product-id="${this._escape(product.id)}" aria-label="View ${this._escape(product.name)} details">
+      <td data-label="Product"><strong>${this._escape(product.name)}</strong></td>
+      <td data-label="Brand">${this._escape(product.brand || "—")}</td>
+      <td data-label="Default location">${this._escape(this._locationName(product.default_storage_location))}</td>
+      <td data-label="Current stock">${this._escape(this._stockSummary(record))}</td>
+      <td data-label="Status">${record.low_stock ? `<span class="badge">Low stock</span>` : "—"}</td>
+      <td data-label="Nearest expiry">Not tracked</td>
+    </tr>`;
+  }
+
+  _locationName(identifier) {
+    return this._locations.find((item) => item.id === identifier)?.name || identifier || "—";
+  }
+
+  _stockSummary(record) {
+    const stocked = record.stock.filter((item) => item.quantity > 0);
+    if (!stocked.length) {
+      return `0 ${record.stock[0]?.unit || "items"}`;
+    }
+    const units = new Set(stocked.map((item) => item.unit));
+    if (units.size === 1) {
+      return `${this._number(record.total_quantity)} ${stocked[0].unit}`;
+    }
+    return stocked.map((item) =>
+      `${this._number(item.quantity)} ${item.unit} (${this._locationName(item.location)})`
+    ).join("; ");
+  }
+
+  _renderSettings() {
+    return `<section class="section">
+      <div class="section-toolbar"><div><h2>Storage locations</h2><p class="muted">Location IDs remain stable when names change. Locations with product or stock history cannot be deleted.</p></div></div>
+      <form class="location-create" data-form="location-create"><label for="new-location">Add location</label><input id="new-location" name="name" required maxlength="64" placeholder="e.g. Pantry"><button type="submit">Add location</button></form>
+      ${this._locations.length ? `<ul class="location-list">${this._locations.map((item) => `<li><span><strong>${this._escape(item.name)}</strong><small>${this._escape(item.id)}</small></span><span class="actions"><button class="secondary" type="button" data-action="rename-location" data-location-id="${this._escape(item.id)}">Rename</button><button class="secondary danger" type="button" data-action="delete-location" data-location-id="${this._escape(item.id)}">Delete</button></span></li>`).join("")}</ul>` : `<div class="empty"><p>No locations configured.</p></div>`}
+    </section>`;
   }
 
   _renderShopping() {
@@ -405,17 +573,15 @@ class KitchenManagerPanel extends HTMLElement {
   }
 
   _renderMeals() {
-    const mealCards = this._meals.map((meal) => `
-      <article class="meal-card">
-        <h2>${this._escape(meal.name)}</h2>
-        <div class="meal-meta"><span>${this._escape(meal.effort[0].toUpperCase() + meal.effort.slice(1))}</span><span>${meal.time_minutes} min</span><span>${meal.eligible_weekdays.length} eligible days</span></div>
-        ${meal.ingredients.length ? `<p class="muted">${meal.ingredients.map((item) => `${this._escape(item.product_name)} · ${this._number(item.quantity)} ${this._escape(item.unit || item.product_unit || "")}`).join(", ")}</p>` : ""}
-        ${meal.recurrence ? `<p class="muted">Repeats ${meal.recurrence.interval_weeks === 1 ? "weekly" : `every ${meal.recurrence.interval_weeks} weeks`} on ${this._weekdayNames[meal.recurrence.weekday]}.</p>` : ""}
-        <div class="actions">
-          <button class="secondary" type="button" data-action="edit-meal" data-meal-id="${this._escape(meal.id)}">Edit</button>
-          <button class="secondary danger" type="button" data-action="delete-meal" data-meal-id="${this._escape(meal.id)}">Delete</button>
-        </div>
-      </article>`).join("");
+    const matchingMeals = this._filteredMeals();
+    const mealPageCount = Math.max(1, Math.ceil(matchingMeals.length / 25));
+    this._mealPage = Math.min(this._mealPage, mealPageCount);
+    const pageMeals = matchingMeals.slice((this._mealPage - 1) * 25, this._mealPage * 25);
+    const mealTiles = pageMeals.map((meal) => `
+      <button class="recipe-tile" type="button" data-action="edit-meal" data-meal-id="${this._escape(meal.id)}" aria-label="View and edit ${this._escape(meal.name)}">
+        <strong>${this._escape(meal.name)}</strong>
+        <span>${this._escape(meal.effort[0].toUpperCase() + meal.effort.slice(1))} · ${meal.time_minutes} min</span>
+      </button>`).join("");
     const weeks = this._planner.weeks.map((week) => `
       <section class="week">
         <h2>Week of ${this._escape(this._formatDate(week.start_date))}</h2>
@@ -429,9 +595,27 @@ class KitchenManagerPanel extends HTMLElement {
         ${this._planner.weeks.length ? weeks : `<div class="loading">The planner is being prepared.</div>`}
       </section>
       <section class="section" style="margin-top:24px">
-        <div class="planner-toolbar"><div><h2>Your meals</h2><p class="muted">Recipes can have optional ingredients and instructions.</p></div></div>
-        ${mealCards ? `<section class="grid">${mealCards}</section>` : `<div class="empty"><h3>No meals yet</h3><p class="muted">Add a meal to start building your recipe collection and planner.</p><button type="button" data-action="create-meal">Add your first meal</button></div>`}
+        <div class="planner-toolbar"><div><h2>Your meals</h2><p class="muted">Recipes can have optional ingredients and instructions.</p></div><button type="button" data-action="create-meal">Add meal</button></div>
+        ${this._meals.length ? `<div class="recipe-tools">
+          <label>Search recipes<input data-meal-search data-focus-key="meal-search" type="search" value="${this._escape(this._mealQuery)}" placeholder="Search recipe names"></label>
+          <label>Effort<select data-meal-effort><option value="any">Any effort</option>${["low", "medium", "high"].map((item) => `<option value="${item}" ${this._mealEffort === item ? "selected" : ""}>${item[0].toUpperCase()}${item.slice(1)}</option>`).join("")}</select></label>
+          <label>Maximum time<input data-meal-time type="number" min="0" step="1" value="${this._escape(this._mealMaxTime)}" placeholder="Any time"></label>
+        </div>
+        ${mealTiles ? `<div class="recipe-grid" aria-label="Recipes">${mealTiles}</div>
+          <div class="pagination"><button class="secondary" type="button" data-action="recipe-previous" ${this._mealPage <= 1 ? "disabled" : ""}>Previous</button><span>Page ${this._mealPage} of ${mealPageCount} — ${matchingMeals.length} meals</span><button class="secondary" type="button" data-action="recipe-next" ${this._mealPage >= mealPageCount ? "disabled" : ""}>Next</button></div>`
+          : `<div class="empty"><h3>No meals match these filters</h3><p class="muted">Try another search or adjust the effort and time filters.</p></div>`}`
+          : `<div class="empty"><h3>No meals yet</h3><p class="muted">Add a meal to start building your recipe collection and planner.</p><button type="button" data-action="create-meal">Add your first meal</button></div>`}
       </section>`;
+  }
+
+  _filteredMeals() {
+    const query = this._mealQuery.trim().toLocaleLowerCase();
+    const maxTime = this._mealMaxTime === "" ? null : Number(this._mealMaxTime);
+    return [...this._meals]
+      .filter((meal) => (!query || meal.name.toLocaleLowerCase().includes(query))
+        && (this._mealEffort === "any" || meal.effort === this._mealEffort)
+        && (maxTime === null || meal.time_minutes <= maxTime))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   }
 
   _plannerDay(day) {
@@ -693,10 +877,13 @@ class KitchenManagerPanel extends HTMLElement {
     if (this._modal?.type === "meal" && this._returnToPicker) {
       this._modal = { type: "picker" };
       this._returnToPicker = false;
+      this._modalError = "";
       this._render();
       return;
     }
     this._modal = null;
+    this._modalError = "";
+    this._modalError = "";
     this._render();
   }
 
@@ -711,45 +898,13 @@ class KitchenManagerPanel extends HTMLElement {
       : { month: "long", day: "numeric", year: "numeric" });
   }
 
-  _productCard(record) {
-    const product = record.product;
-    const stock = record.stock.length
-      ? `<ul class="stock-list">${record.stock.map((item) => `
-          <li><span>${this._escape(item.location)}</span><strong>${this._number(item.quantity)} ${this._escape(item.unit)}</strong></li>
-        `).join("")}</ul>`
-      : `<p class="muted">No stock recorded</p>`;
-    const meta = [
-      product.package_size == null ? "" : `${this._number(product.package_size)} ${product.package_unit || ""}`,
-      product.barcode ? `Barcode ${product.barcode}` : "",
-      `Default: ${product.default_storage_location}`,
-      record.ingredient_name ? `Ingredient: ${record.ingredient_name}` : "",
-      product.reorder_threshold == null ? "" : `Reorder below ${this._number(product.reorder_threshold)}`,
-    ].filter(Boolean).join(" · ");
-    return `
-      <article>
-        <div class="product-head">
-          <div><h2>${this._escape(product.name)}</h2><div class="brand">${this._escape(product.brand || "No brand")}</div></div>
-          ${record.low_stock ? `<span class="badge">Low stock</span>` : ""}
-        </div>
-        ${meta ? `<p class="muted">${this._escape(meta)}</p>` : ""}
-        ${product.description ? `<p>${this._escape(product.description)}</p>` : ""}
-        ${stock}
-        <div class="actions">
-          <button type="button" data-action="stock" data-operation="add" data-product-id="${this._escape(product.id)}">Add</button>
-          <button class="secondary" type="button" data-action="stock" data-operation="consume" data-product-id="${this._escape(product.id)}">Use</button>
-          <button class="secondary" type="button" data-action="stock" data-operation="set" data-product-id="${this._escape(product.id)}">Correct</button>
-          <button class="secondary" type="button" data-action="edit" data-product-id="${this._escape(product.id)}">Edit</button>
-        </div>
-      </article>`;
-  }
-
   _transactionRow(item) {
     const date = new Date(item.timestamp);
     const time = Number.isNaN(date.valueOf()) ? item.timestamp : date.toLocaleString();
     const changed = item.quantity_changed > 0 ? `+${this._number(item.quantity_changed)}` : this._number(item.quantity_changed);
     return `<li>
       <span>${this._escape(time)}</span>
-      <span>${this._escape(item.operation)} · ${this._escape(item.location)}</span>
+      <span>${this._escape(item.operation)} · ${this._escape(this._locationName(item.location))}</span>
       <span>${changed} → ${this._number(item.new_quantity)}</span>
     </li>`;
   }
@@ -775,6 +930,7 @@ class KitchenManagerPanel extends HTMLElement {
       return `<div class="modal-backdrop" data-action="backdrop">
         <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
           <div class="modal-head"><h2 id="modal-title">${meal ? "Edit meal" : "Add meal"}</h2><button class="secondary" type="button" data-action="close" aria-label="Close">×</button></div>
+          ${this._modalErrorMarkup()}
           <form data-form="meal" data-meal-id="${this._escape(meal?.id || "")}">
             <label for="meal-name">Name</label>
             <input id="meal-name" name="name" required maxlength="200" value="${this._escape(meal?.name || "")}">
@@ -810,10 +966,50 @@ class KitchenManagerPanel extends HTMLElement {
               </div>
               <p class="muted">An individual date can be changed without removing this recurrence.</p>
             </details>
-            <div class="form-actions"><button class="secondary" type="button" data-action="close">Cancel</button><button type="submit">${meal ? "Save changes" : "Create meal"}</button></div>
+            <div class="form-actions">
+              ${meal ? `<button class="secondary danger recipe-delete" type="button" data-action="delete-meal" data-meal-id="${this._escape(meal.id)}">Delete meal</button>` : ""}
+              <button class="secondary" type="button" data-action="close">Cancel</button><button type="submit">${meal ? "Save changes" : "Create meal"}</button>
+            </div>
           </form>
         </section>
       </div>`;
+    }
+    if (this._modal.type === "product-detail") {
+      const record = this._products.find((item) => item.product.id === this._modal.productId);
+      if (!record) return "";
+      const product = record.product;
+      const recent = this._history.filter((item) => item.product_id === product.id).slice(0, 8);
+      return `<div class="modal-backdrop" data-action="backdrop">
+        <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+          <div class="modal-head"><h2 id="modal-title">${this._escape(product.name)}</h2><button class="secondary" type="button" data-action="close" aria-label="Close">×</button></div>
+          ${this._modalErrorMarkup()}
+          <div class="detail-grid">
+            <div><strong>Brand</strong><div>${this._escape(product.brand || "—")}</div></div>
+            <div><strong>Default location</strong><div>${this._escape(this._locationName(product.default_storage_location))}</div></div>
+            <div><strong>Barcode</strong><div>${this._escape(product.barcode || "—")}</div></div>
+            <div><strong>Package</strong><div>${product.package_size == null ? "—" : `${this._number(product.package_size)} ${this._escape(product.package_unit || "")}`}</div></div>
+          </div>
+          ${product.description ? `<p>${this._escape(product.description)}</p>` : ""}
+          <h3>Current stock</h3>
+          ${record.stock.length ? `<ul class="stock-list">${record.stock.map((item) => `<li><span>${this._escape(item.location_name || this._locationName(item.location))}</span><strong>${this._number(item.quantity)} ${this._escape(item.unit)}</strong></li>`).join("")}</ul>` : `<p class="muted">No stock recorded.</p>`}
+          <div class="actions">
+            <button type="button" data-action="stock" data-operation="add" data-product-id="${this._escape(product.id)}">Add stock</button>
+            <button class="secondary" type="button" data-action="stock" data-operation="consume" data-product-id="${this._escape(product.id)}">Consume</button>
+            <button class="secondary" type="button" data-action="stock" data-operation="set" data-product-id="${this._escape(product.id)}">Correct</button>
+            <button class="secondary" type="button" data-action="edit" data-product-id="${this._escape(product.id)}">Edit</button>
+          </div>
+          <h3>Recent stock history</h3>
+          ${recent.length ? `<ul class="detail-history">${recent.map((item) => `<li>${this._escape(item.operation)} ${this._number(Math.abs(item.quantity_changed))} ${this._escape(this._locationName(item.location))} · ${this._escape(new Date(item.timestamp).toLocaleString())}</li>`).join("")}</ul>` : `<p class="muted">No recent stock changes.</p>`}
+        </section>
+      </div>`;
+    }
+    if (this._modal.type === "location") {
+      const location = this._modal.location;
+      return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head"><h2 id="modal-title">Rename location</h2><button class="secondary" type="button" data-action="close" aria-label="Close">×</button></div>
+        ${this._modalErrorMarkup()}
+        <form data-form="location-rename" data-location-id="${this._escape(location.id)}"><label for="location-name">Display name</label><input id="location-name" name="name" required maxlength="64" value="${this._escape(location.name)}"><div class="form-actions"><button class="secondary" type="button" data-action="close">Cancel</button><button type="submit">Save name</button></div></form>
+      </section></div>`;
     }
     if (this._modal.type === "product") {
       const product = this._modal.product;
@@ -821,6 +1017,7 @@ class KitchenManagerPanel extends HTMLElement {
       return `<div class="modal-backdrop" data-action="backdrop">
         <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
           <div class="modal-head"><h2 id="modal-title">${editing ? "Edit product" : "Add product"}</h2><button class="secondary" type="button" data-action="close" aria-label="Close">×</button></div>
+          ${this._modalErrorMarkup()}
           <form data-form="product" data-product-id="${this._escape(product?.id || "")}">
             <label for="product-name">Name</label>
             <input id="product-name" name="name" required maxlength="200" value="${this._escape(product?.name || "")}">
@@ -834,9 +1031,10 @@ class KitchenManagerPanel extends HTMLElement {
             </div>
             <label for="reorder-threshold">Reorder below (optional)</label>
             <input id="reorder-threshold" name="reorder_threshold" type="number" min="0" step="any" value="${product?.reorder_threshold ?? ""}" placeholder="No threshold">
-              <label for="default-location">Default storage location</label>
-              <input id="default-location" name="default_storage_location" list="storage-locations" required maxlength="64" value="${this._escape(product?.default_storage_location || "cupboard")}">
-              ${this._locationOptions()}
+            <label for="default-location">Default storage location</label>
+            <select id="default-location" name="default_storage_location" required>
+              ${this._locationOptions(product?.default_storage_location || "cupboard")}
+            </select>
               <label for="ingredient-name">Generic ingredient (optional)</label>
               <input id="ingredient-name" name="ingredient_name" value="${this._escape(this._modal.ingredientName || "")}" placeholder="For sharing recipes later">
               <label for="product-description">Description (optional)</label>
@@ -853,24 +1051,73 @@ class KitchenManagerPanel extends HTMLElement {
     return `<div class="modal-backdrop" data-action="backdrop">
       <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div class="modal-head"><h2 id="modal-title">${operationLabel}: ${this._escape(product?.name || "")}</h2><button class="secondary" type="button" data-action="close" aria-label="Close">×</button></div>
+        ${this._modalErrorMarkup()}
         <form data-form="stock" data-product-id="${this._escape(this._modal.productId)}" data-operation="${operation}">
           <label for="stock-quantity">${operation === "set" ? "New quantity" : "Quantity"}</label>
           <input id="stock-quantity" name="quantity" type="number" min="${operation === "set" ? "0" : "0.000001"}" step="any" required>
-          <label for="stock-location">Storage location override (optional)</label>
-          <input id="stock-location" name="location" list="storage-locations" maxlength="64" value="${operation === "consume" ? "" : this._escape(product?.default_storage_location || "cupboard")}" placeholder="${operation === "consume" ? "Leave blank if stock is in one location" : "Uses the product default"}">
-          ${this._locationOptions()}
+          <label for="stock-location">${operation === "add" ? "Storage location" : "Storage location override (optional)"}</label>
+          <select id="stock-location" name="location">
+            ${operation === "consume" ? `<option value="">Automatic when unambiguous</option>` : ""}
+            ${this._locations.map((location) => `<option value="${this._escape(location.id)}" ${operation !== "consume" && location.id === (product?.default_storage_location || "cupboard") ? "selected" : ""}>${this._escape(location.name)}</option>`).join("")}
+          </select>
           <div class="form-actions"><button class="secondary" type="button" data-action="close">Cancel</button><button type="submit">${operationLabel}</button></div>
         </form>
       </section>
     </div>`;
   }
 
+  _modalErrorMarkup() {
+    return this._modalError
+      ? `<div class="error modal-error" role="alert">${this._escape(this._modalError)}</div>`
+      : "";
+  }
+
   _bindEvents() {
     this.shadowRoot.querySelectorAll("[data-action]").forEach((element) => {
       element.addEventListener("click", (event) => this._handleAction(event));
+      if (element.matches("tr[role='button']")) {
+        element.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            this._handleAction({ currentTarget: element, target: element });
+          }
+        });
+      }
     });
     this.shadowRoot.querySelectorAll("form").forEach((form) => {
       form.addEventListener("submit", (event) => this._handleSubmit(event));
+    });
+    const inventorySearch = this.shadowRoot.querySelector("[data-product-search]");
+    inventorySearch?.addEventListener("input", () => {
+      this._search = inventorySearch.value;
+      this._inventoryPage = 1;
+      this._render();
+    });
+    this.shadowRoot.querySelector("[data-location-filter]")?.addEventListener("change", (event) => {
+      this._locationFilter = event.currentTarget.value;
+      this._inventoryPage = 1;
+      this._render();
+    });
+    this.shadowRoot.querySelector("[data-low-stock-filter]")?.addEventListener("change", (event) => {
+      this._lowStockFilter = event.currentTarget.value;
+      this._inventoryPage = 1;
+      this._render();
+    });
+    const mealSearch = this.shadowRoot.querySelector("[data-meal-search]");
+    mealSearch?.addEventListener("input", () => {
+      this._mealQuery = mealSearch.value;
+      this._mealPage = 1;
+      this._render();
+    });
+    this.shadowRoot.querySelector("[data-meal-effort]")?.addEventListener("change", (event) => {
+      this._mealEffort = event.currentTarget.value;
+      this._mealPage = 1;
+      this._render();
+    });
+    this.shadowRoot.querySelector("[data-meal-time]")?.addEventListener("input", (event) => {
+      this._mealMaxTime = event.currentTarget.value;
+      this._mealPage = 1;
+      this._render();
     });
     const search = this.shadowRoot.querySelector("[data-picker-search]");
     search?.addEventListener("input", () => {
@@ -911,26 +1158,33 @@ class KitchenManagerPanel extends HTMLElement {
       await this._navigate(element.dataset.view);
       return;
     } else if (action === "create") {
+      this._modalError = "";
       this._modal = { type: "product" };
     } else if (action === "edit") {
       const record = this._products.find((item) => item.product.id === element.dataset.productId);
+      this._modalError = "";
       this._modal = {
         type: "product",
         product: record.product,
         ingredientName: record.ingredient_name || "",
       };
+    } else if (action === "product-detail") {
+      this._modal = { type: "product-detail", productId: element.dataset.productId };
     } else if (action === "stock") {
+      this._modalError = "";
       this._modal = {
         type: "stock",
         productId: element.dataset.productId,
         operation: element.dataset.operation,
       };
     } else if (action === "create-meal") {
+      this._modalError = "";
       this._mealIngredients = [];
       this._returnToPicker = this._picker !== null;
       this._modal = { type: "meal" };
     } else if (action === "edit-meal") {
       const meal = this._meals.find((item) => item.id === element.dataset.mealId);
+      this._modalError = "";
       this._mealIngredients = meal.ingredients.map((item) => ({ ...item }));
       this._modal = { type: "meal", meal };
     } else if (action === "delete-meal") {
@@ -938,10 +1192,11 @@ class KitchenManagerPanel extends HTMLElement {
       if (meal && window.confirm(`Delete "${meal.name}"? Past planner entries will be retained.`)) {
         try {
           await this._request("meal/delete", { meal_id: meal.id });
+          this._modal = null;
+          this._modalError = "";
           await this._loadMeals();
         } catch (error) {
-          this._error = error.message || "The meal could not be deleted.";
-          this._render();
+          this._showModalError(error.message || "The meal could not be deleted.");
         }
       }
       return;
@@ -991,9 +1246,51 @@ class KitchenManagerPanel extends HTMLElement {
       this._render();
       this.shadowRoot.querySelector('[data-action="picker-previous"]')?.focus();
       return;
+    } else if (action === "sort-inventory") {
+      const key = element.dataset.sort;
+      this._inventorySort = {
+        key,
+        direction: this._inventorySort.key === key && this._inventorySort.direction === "asc" ? "desc" : "asc",
+      };
+      this._render();
+      return;
+    } else if (action === "inventory-previous" || action === "inventory-next") {
+      this._inventoryPage += action === "inventory-next" ? 1 : -1;
+      this._render();
+      return;
+    } else if (action === "recipe-previous" || action === "recipe-next") {
+      this._mealPage += action === "recipe-next" ? 1 : -1;
+      this._render();
+      return;
+    } else if (action === "reset-inventory-filters") {
+      this._search = "";
+      this._locationFilter = "any";
+      this._lowStockFilter = "any";
+      this._inventoryPage = 1;
+      this._render();
+      return;
+    } else if (action === "rename-location") {
+      const location = this._locations.find((item) => item.id === element.dataset.locationId);
+      if (location) {
+        this._modalError = "";
+        this._modal = { type: "location", location };
+      }
+    } else if (action === "delete-location") {
+      const location = this._locations.find((item) => item.id === element.dataset.locationId);
+      if (location && window.confirm(`Delete the unused location "${location.name}"?`)) {
+        try {
+          await this._request("location/delete", { location_id: location.id });
+          await this._loadSettings();
+        } catch (error) {
+          this._error = error.message || "The location could not be deleted.";
+          this._render();
+        }
+      }
+      return;
     } else if (action === "picker-add-meal") {
       this._mealIngredients = [];
       this._returnToPicker = true;
+      this._modalError = "";
       this._modal = { type: "meal" };
       this._render();
       return;
@@ -1010,10 +1307,18 @@ class KitchenManagerPanel extends HTMLElement {
       this._closeModal();
       return;
     } else if (action === "refresh") {
-      await (this._view === "meals" ? this._loadMeals() : this._view === "shopping" ? this._loadShopping() : this._load());
+      await (this._view === "meals"
+        ? this._loadMeals()
+        : this._view === "shopping"
+          ? this._loadShopping()
+          : this._view === "settings"
+            ? this._loadSettings()
+            : this._load());
       return;
     } else if (action === "clear-search") {
-      await this._load("");
+      this._search = "";
+      this._inventoryPage = 1;
+      this._render();
       return;
     } else {
       return;
@@ -1031,6 +1336,21 @@ class KitchenManagerPanel extends HTMLElement {
     try {
       if (form.dataset.form === "search") {
         await this._load(String(data.get("search") || "").trim());
+        return;
+      }
+      if (form.dataset.form === "location-create") {
+        await this._request("location/create", { name: String(data.get("name") || "").trim() });
+        await this._loadSettings();
+        return;
+      }
+      if (form.dataset.form === "location-rename") {
+        await this._request("location/rename", {
+          location_id: form.dataset.locationId,
+          name: String(data.get("name") || "").trim(),
+        });
+        this._modalError = "";
+        this._modal = null;
+        await this._loadSettings();
         return;
       }
       if (form.dataset.form === "stock") {
@@ -1085,6 +1405,7 @@ class KitchenManagerPanel extends HTMLElement {
         const returnToPicker = this._returnToPicker;
         this._returnToPicker = false;
         this._modal = returnToPicker ? { type: "picker" } : null;
+        this._modalError = "";
         this._mealIngredients = [];
         await this._loadMeals();
         return;
@@ -1100,10 +1421,20 @@ class KitchenManagerPanel extends HTMLElement {
         }
       }
       this._modal = null;
-      await (this._view === "meals" ? this._loadMeals() : this._load());
+      this._modalError = "";
+      await (this._view === "meals"
+        ? this._loadMeals()
+        : this._view === "settings"
+          ? this._loadSettings()
+          : this._load());
     } catch (error) {
-      this._error = error.message || "The change could not be saved.";
-      this._showError(this._error);
+      const message = error.message || "The change could not be saved.";
+      if (this._modal) {
+        this._showModalError(message);
+      } else {
+        this._error = message;
+        this._showError(message);
+      }
     } finally {
       if (submit.isConnected) {
         submit.disabled = false;
@@ -1191,6 +1522,21 @@ class KitchenManagerPanel extends HTMLElement {
       error.textContent = message;
       error.hidden = false;
     }
+  }
+
+  _showModalError(message) {
+    this._modalError = message;
+    const dialog = this.shadowRoot.querySelector('[role="dialog"]');
+    const heading = dialog?.querySelector(".modal-head");
+    if (!dialog || !heading) return;
+    let error = dialog.querySelector(".modal-error");
+    if (!error) {
+      error = document.createElement("div");
+      error.className = "error modal-error";
+      error.setAttribute("role", "alert");
+      heading.insertAdjacentElement("afterend", error);
+    }
+    error.textContent = message;
   }
 
   _escape(value) {
