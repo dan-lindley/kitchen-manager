@@ -570,7 +570,7 @@ async def websocket_generate_planner(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Persist random eligible meal suggestions for unplanned dates."""
+    """Regenerate random entries and fill eligible unplanned dates."""
     try:
         planner = await _meal_planner(hass).async_generate(today=dt_util.now().date())
     except (MealError, ModelValidationError) as err:

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0
+
+- Fixed Suggest Meals to replace future `random` assignments as well as fill
+  unplanned dates, while preserving fixed assignments and recurring
+  occurrences/overrides.
+- Balanced automatically generated meals across the displayed four-week
+  schedule, considered newly added recipes immediately, and avoided the
+  previous same-date meal when a balanced alternative is available.
+- Kept random suggestions persistent on refresh/restart without treating them
+  as fixed; added clear planner update/no-change feedback and a per-date
+  Release to random action.
+- Prevented per-date random shuffle from overriding a recurring assignment;
+  recurring occurrences can still be manually overridden without changing the
+  recurrence rule.
+- Added planner state/regeneration regression tests. The planner currently has
+  no configured maximum-effort or cooking-time settings; no defaults are
+  imposed.
+
 ## 0.5.0
 
 - Added optional persistent product groups while retaining separate product

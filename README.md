@@ -59,11 +59,19 @@ instructions are optional. Ingredients reference catalogue products, including
 products that currently have no stock; they are not substituted or grouped.
 
 Choose a meal for an individual date, mark that date unplanned, generate
-suggestions for eligible open dates, or shuffle one date without changing
-other selections. Eligibility is checked against the actual calendar date,
-using Monday `0` through Sunday `6`, in the backend. The picker uses that same
-backend eligibility result. Generated choices are saved and do not change on
-refresh.
+suggestions, or request a random meal for one date without changing other
+selections. Explicitly selecting a meal makes it fixed; generated random
+suggestions remain replaceable by Suggest Meals and persist without being
+regenerated on refresh. Suggest Meals preserves fixed assignments, recurrence
+rules, and date-level recurrence overrides while regenerating random dates and
+filling eligible unplanned dates. A fixed date can be released back to random
+planning from its picker.
+
+Eligibility is checked against the actual calendar date, using Monday `0`
+through Sunday `6`, in the backend. The picker uses that same backend
+eligibility result. Suggestions balance usage across the four-week period and
+favor meals outside the recent history window. Newly added recipes are
+considered on the next generation request.
 
 Suggestions prefer recipes not used in the previous seven days and avoid
 repeating the immediately preceding meal when another eligible recipe exists.
@@ -75,8 +83,9 @@ current weekday rules is marked until explicitly changed. Manual selections
 can still override weekday eligibility.
 
 Planner days do not currently have configurable maximum-effort or
-maximum-cooking-time restrictions. The meal picker's optional time filter is
-for browsing only and does not change automatic planner suggestions.
+maximum-cooking-time restrictions. No effort or time defaults are imposed; the
+meal picker's optional time filter is for browsing only and does not change
+automatic planner suggestions.
 
 A meal can repeat weekly, every two weeks, or every four weeks on one eligible
 weekday. Each date occurrence can be overridden or explicitly left unplanned
@@ -100,13 +109,15 @@ shopping list.
 4. Download **Kitchen Manager**, restart Home Assistant, and add the integration
    from **Settings → Devices & services → Add integration**.
 
-To update an existing HACS installation to **0.5.0**, open **HACS →
+To update an existing HACS installation to **0.6.0**, open **HACS →
 Integrations**, select Kitchen Manager, choose **Update** (or download the
 pending update), and restart Home Assistant. Your saved products, stock,
-meals, recurrence rules, and planner selections are retained. The integration
-automatically migrates saved storage-location labels to stable location IDs;
-it adds empty product-group metadata without merging existing products and does
-not modify Home Assistant's Recorder database.
+meals, recurrence rules, and planner selections are retained. Generated random
+planner entries can now be regenerated with **Suggest meals**; explicitly
+selected fixed assignments and recurring occurrences are preserved. The
+integration automatically migrates saved storage-location labels to stable
+location IDs; it adds empty product-group metadata without merging existing
+products and does not modify Home Assistant's Recorder database.
 
 ### Manual
 

@@ -20,11 +20,13 @@ class KitchenManagerPanel extends HTMLElement {
     this._search = "";
     this._loading = true;
     this._error = "";
+    this._plannerMessage = "";
     this._modal = null;
     this._modalError = "";
     this._picker = null;
     this._pickerSaving = false;
     this._returnToPicker = false;
+    this._plannerGenerating = false;
     this._inventoryPage = 1;
     this._expandedGroups = new Set();
     this._inventorySort = { key: "name", direction: "asc" };
@@ -35,6 +37,28 @@ class KitchenManagerPanel extends HTMLElement {
     this._mealEffort = "any";
     this._mealMaxTime = "";
     this._onDialogKeydown = (event) => this._handleDialogKeydown(event);
+  }
+
+  async _suggestPickerDay() {
+    if (!this._picker || this._pickerSaving) return;
+    this._pickerSaving = true;
+    this._error = "";
+    this._render();
+    try {
+      const updatedDay = await this._request("planner/shuffle", {
+        date: this._picker.date,
+      });
+      this._updatePlannerDay(updatedDay);
+      this._closePicker();
+      if (!await this._loadMeals()) {
+        this._error = `The date was saved, but the planner could not be refreshed: ${this._error}`;
+        this._render();
+      }
+    } catch (error) {
+      this._pickerSaving = false;
+      this._error = error.message || "A random meal could not be assigned. Your previous selection is unchanged.";
+      this._render();
+    }
   }
 
   _locationOptions(selectedId) {
@@ -109,6 +133,7 @@ class KitchenManagerPanel extends HTMLElement {
     this._loading = true;
     this._error = "";
     this._render();
+    let succeeded = false;
     try {
       const [mealResult, planner, catalog] = await Promise.all([
         this._request("meals"),
@@ -119,12 +144,14 @@ class KitchenManagerPanel extends HTMLElement {
       this._planner = planner;
       this._mealProducts = catalog.products;
       this._groups = catalog.product_groups || this._groups;
+      succeeded = true;
     } catch (error) {
       this._error = error.message || "Meals could not be loaded.";
     } finally {
       this._loading = false;
       this._render();
     }
+    return succeeded;
   }
 
   async _navigate(view) {
@@ -256,6 +283,7 @@ class KitchenManagerPanel extends HTMLElement {
         .actions { display: flex; flex-wrap: wrap; gap: 7px; }
         .actions button { flex: 1 1 72px; padding-inline: 8px; }
         .error { margin: 16px 0; padding: 12px 14px; border-radius: 8px; color: var(--error-color); background: var(--secondary-background-color); }
+          .notice { margin: 16px 0; padding: 12px 14px; border-radius: 8px; color: var(--primary-text-color); background: var(--secondary-background-color); border-left: 3px solid var(--primary-color); }
         .empty { text-align: center; padding: 32px 18px; }
         .history { margin-top: 24px; }
         .history-list { padding: 0; margin: 12px 0 0; list-style: none; }
@@ -451,6 +479,7 @@ class KitchenManagerPanel extends HTMLElement {
           <button type="button" data-action="navigate" data-view="settings" aria-current="${this._view === "settings" ? "page" : "false"}">Settings</button>
         </nav>
         <div class="error" data-error role="alert" ${this._error ? "" : "hidden"}>${this._escape(this._error)}</div>
+        <div class="notice" role="status" ${this._plannerMessage ? "" : "hidden"}>${this._escape(this._plannerMessage)}</div>
         ${this._loading ? `<div class="loading" role="status">Loading ${this._view === "meals" ? "meals and planner" : this._view === "shopping" ? "shopping suggestions" : "kitchen inventory"}…</div>` : content}
         ${this._modal ? this._renderModal() : ""}
       </main>`;
@@ -670,8 +699,8 @@ class KitchenManagerPanel extends HTMLElement {
       </section>`).join("");
     return `
       <section class="section">
-        <div class="planner-toolbar"><div><h2>Four-week meal planner</h2><p class="muted">Selections are saved automatically and remain fixed when you return.</p></div>
-          <button class="secondary" type="button" data-action="generate-planner">Suggest meals</button>
+        <div class="planner-toolbar"><div><h2>Four-week meal planner</h2><p class="muted">Suggestions are saved and can be regenerated. Choosing a meal makes it fixed; recurring meals repeat only when configured.</p></div>
+          <button class="secondary" type="button" data-action="generate-planner" ${this._plannerGenerating || this._loading ? "disabled" : ""}>${this._plannerGenerating ? "Suggesting..." : "Suggest meals"}</button>
         </div>
         ${this._planner.weeks.length ? weeks : `<div class="loading">The planner is being prepared.</div>`}
       </section>
@@ -714,7 +743,10 @@ class KitchenManagerPanel extends HTMLElement {
     if (day.mode === "recurring") return "Recurring";
     if (day.mode === "random") return "Random";
     if (day.mode === "fixed") return "Fixed";
-    if (day.mode === "override") return day.meal_id ? "Fixed · Recurrence override" : "Unplanned · Recurrence override";
+    if (day.mode === "override") {
+      if (!day.recurring) return day.meal_id ? "Fixed" : "Unplanned";
+      return day.meal_id ? "Override of recurring" : "Unplanned override";
+    }
     return "Unplanned";
   }
 
@@ -839,6 +871,7 @@ class KitchenManagerPanel extends HTMLElement {
           </div>
           <div class="picker-actions">
             ${selected?.recurring && selected.mode !== "recurring" ? `<button class="secondary" type="button" data-action="restore-recurrence" ${this._pickerSaving ? "disabled" : ""}>Use recurring meal</button>` : ""}
+            ${!selected?.recurring ? `<button class="secondary" type="button" data-action="suggest-day" ${this._pickerSaving ? "disabled" : ""}>${["fixed", "override"].includes(selected?.mode) ? "Release to random" : "Suggest a random meal"}</button>` : ""}
             <button class="secondary" type="button" data-action="clear-picker-day" ${this._pickerSaving ? "disabled" : ""}>${selected?.meal_id ? "Clear day" : "Leave unplanned"}</button>
             <button class="secondary" type="button" data-action="picker-add-meal" ${this._pickerSaving ? "disabled" : ""}>Add new meal</button>
           </div>
@@ -1341,16 +1374,38 @@ class KitchenManagerPanel extends HTMLElement {
         this._mealIngredients.splice(Number(element.dataset.index), 1);
       }
     } else if (action === "generate-planner") {
+      if (this._plannerGenerating) return;
+      this._plannerGenerating = true;
+      this._error = "";
+      this._plannerMessage = "";
+      this._render();
       try {
         const result = await this._request("planner/generate");
-        await this._loadMeals();
-        if (result.unavailable_dates?.length) {
-          const dates = result.unavailable_dates.map((day) => this._formatDate(day, true));
-          this._error = `No meals are eligible on ${dates.join(", ")}. Those dates were left unplanned.`;
-          this._render();
+        const refreshed = await this._loadMeals();
+        if (!refreshed) {
+          this._error = `Suggestions were saved, but the planner could not be refreshed: ${this._error}`;
+          return;
         }
+        const changes = result.generated_count + result.replaced_count;
+        const unavailable = result.unavailable_dates || [];
+        const details = [];
+        if (result.generated_count) details.push(`${result.generated_count} unplanned date${result.generated_count === 1 ? "" : "s"} filled`);
+        if (result.replaced_count) details.push(`${result.replaced_count} random suggestion${result.replaced_count === 1 ? "" : "s"} replaced`);
+        if (result.unchanged_random_count) details.push(`${result.unchanged_random_count} random suggestion${result.unchanged_random_count === 1 ? "" : "s"} unchanged because no better eligible alternative was available`);
+        if (result.preserved_fixed_count) details.push(`${result.preserved_fixed_count} fixed assignment${result.preserved_fixed_count === 1 ? "" : "s"} kept`);
+        if (result.preserved_recurring_count) details.push(`${result.preserved_recurring_count} recurring date${result.preserved_recurring_count === 1 ? "" : "s"} kept`);
+        if (unavailable.length) {
+          details.push(`no eligible meals for ${unavailable.map((day) => this._formatDate(day, true)).join(", ")}`);
+        }
+        this._plannerMessage = changes
+          ? `Planner updated: ${details.join("; ")}.`
+          : `No dates changed${details.length ? `: ${details.join("; ")}` : ": all dates are already fixed, recurring, or unavailable"}.`;
+        this._render();
       } catch (error) {
         this._error = error.message || "Suggestions could not be generated.";
+        this._render();
+      } finally {
+        this._plannerGenerating = false;
         this._render();
       }
       return;
@@ -1362,6 +1417,9 @@ class KitchenManagerPanel extends HTMLElement {
       return;
     } else if (action === "choose-meal") {
       await this._choosePickerMeal(element.dataset.mealId);
+      return;
+    } else if (action === "suggest-day") {
+      await this._suggestPickerDay();
       return;
     } else if (action === "clear-picker-day") {
       await this._clearPickerDay();
