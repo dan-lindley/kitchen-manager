@@ -296,6 +296,7 @@ class MealPlanner:
         day: str,
         meal_id: str | None,
         use_recurrence: bool = False,
+        allow_ineligible: bool = False,
     ) -> dict[str, Any]:
         """Persist a fixed meal or an explicit unplanned/recurrence override."""
         try:
@@ -319,7 +320,10 @@ class MealPlanner:
                 meal = data.meals.get(meal_id)
                 if meal is None:
                     raise MealError("Choose a meal that still exists.")
-                if selected_day.weekday() not in meal.eligible_weekdays:
+                if (
+                    selected_day.weekday() not in meal.eligible_weekdays
+                    and not allow_ineligible
+                ):
                     raise MealError("That meal is not eligible on this weekday.")
                 mode = PlannerMode.OVERRIDE if recurrence else PlannerMode.FIXED
                 meal_name = meal.name

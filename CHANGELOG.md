@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1
+
+- Replaced planner recipe dropdowns and per-day controls with clickable
+  calendar cards and a responsive meal picker.
+- Added case-insensitive recipe search, combined filters, 25-meal pagination,
+  display-only shuffle, and clear day / recurrence restoration actions.
+- Preserved recurring rules when assigning or clearing a date and added an
+  explicit option to select recipes outside the day's weekday eligibility.
+
 ## 0.3.0
 
 - Added the authenticated Kitchen Manager sidebar panel for catalogue search,

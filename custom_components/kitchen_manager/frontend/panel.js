@@ -15,6 +15,10 @@ class KitchenManagerPanel extends HTMLElement {
     this._loading = true;
     this._error = "";
     this._modal = null;
+    this._picker = null;
+    this._pickerSaving = false;
+    this._returnToPicker = false;
+    this._onDialogKeydown = (event) => this._handleDialogKeydown(event);
   }
 
   _locationOptions() {
@@ -29,10 +33,15 @@ class KitchenManagerPanel extends HTMLElement {
   }
 
   connectedCallback() {
+    document.addEventListener("keydown", this._onDialogKeydown);
     this._render();
     if (this._hass) {
       this._load();
     }
+  }
+
+  disconnectedCallback() {
+    document.removeEventListener("keydown", this._onDialogKeydown);
   }
 
   async _request(type, data = {}) {
@@ -114,6 +123,10 @@ class KitchenManagerPanel extends HTMLElement {
     if (!this.shadowRoot) {
       return;
     }
+    const activeElement = this.shadowRoot.activeElement;
+    const focusKey = activeElement?.dataset?.focusKey;
+    const selectionStart = activeElement?.selectionStart;
+    const selectionEnd = activeElement?.selectionEnd;
     const products = this._products.map((record) => this._productCard(record)).join("");
     const transactions = this._history.map((item) => this._transactionRow(item)).join("");
     const title = {
@@ -238,12 +251,94 @@ class KitchenManagerPanel extends HTMLElement {
         details summary { cursor: pointer; font-weight: 600; }
         .shopping-list { list-style: none; padding: 0; }
         .shopping-list li { padding: 12px 0; border-bottom: 1px solid var(--divider-color); }
+        .week-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); overflow: visible; }
+        .day-card {
+          appearance: none;
+          display: flex;
+          flex-direction: column;
+          align-items: stretch;
+          width: 100%;
+          min-width: 0;
+          min-height: 132px;
+          padding: 13px;
+          color: var(--primary-text-color);
+          text-align: left;
+          background: var(--card-background-color, var(--secondary-background-color));
+          border: 1px solid var(--divider-color);
+          border-radius: 14px;
+          box-shadow: var(--ha-card-box-shadow, 0 1px 3px #0002);
+          transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+        }
+        .day-card:hover, .day-card:focus-visible {
+          border-color: var(--primary-color);
+          box-shadow: 0 4px 14px #0002;
+          transform: translateY(-2px);
+          outline: none;
+        }
+        .day-card:focus-visible { box-shadow: 0 0 0 2px var(--primary-color); }
+        .day-date { font-size: .82rem; color: var(--secondary-text-color); }
+        .day-card h3 { margin: 3px 0 12px; font-size: 1rem; }
+        .day-meal { min-height: 0; margin: auto 0 12px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+        .day-status { align-self: flex-start; border-radius: 999px; padding: 4px 9px; color: var(--secondary-text-color); background: var(--secondary-background-color); font-size: .76rem; font-weight: 650; }
+        .day-status[data-status="fixed"] { color: var(--primary-color); }
+        .day-status[data-status="random"] { color: var(--success-color, var(--primary-color)); }
+        .day-status[data-status="recurring"] { color: var(--accent-color, var(--primary-color)); }
+        .picker-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 18px; background: rgb(0 0 0 / 58%); animation: picker-fade 140ms ease-out; }
+        .picker-dialog { display: flex; flex-direction: column; width: min(1180px, 100%); max-height: min(92vh, 960px); overflow: hidden; padding: clamp(18px, 3vw, 30px); border-radius: 20px; color: var(--primary-text-color); background: var(--card-background-color, var(--primary-background-color)); box-shadow: var(--ha-dialog-box-shadow, 0 16px 54px #0006); animation: picker-rise 160ms ease-out; }
+        .picker-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+        .picker-heading h2 { font-size: 1.5rem; }
+        .picker-heading p { margin: 5px 0 0; color: var(--secondary-text-color); }
+        .picker-tools { display: grid; grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(140px, .42fr)) auto; gap: 10px; align-items: end; margin: 20px 0 14px; }
+        .picker-search { display: grid; gap: 5px; }
+        .picker-tools label { display: grid; gap: 5px; margin: 0; font-size: .82rem; color: var(--secondary-text-color); }
+        .picker-tools input, .picker-tools select { min-height: 44px; }
+        .eligible-toggle { display: flex !important; align-items: center; align-self: center; gap: 8px !important; padding: 0 4px; color: var(--primary-text-color) !important; white-space: nowrap; }
+        .eligible-toggle input { width: 18px; min-height: 18px; accent-color: var(--primary-color); }
+        .picker-grid { display: grid; flex: 1 1 auto; min-height: 0; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-auto-rows: minmax(132px, auto); gap: 12px; overflow-y: auto; overscroll-behavior: contain; padding: 2px 3px 10px; }
+        .meal-tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; width: 100%; min-width: 0; min-height: 132px; padding: 15px; color: var(--primary-text-color); text-align: left; background: var(--secondary-background-color); border: 1px solid var(--divider-color); border-radius: 15px; cursor: pointer; transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease; }
+        .meal-tile:hover, .meal-tile:focus-visible { border-color: var(--primary-color); background: var(--primary-background-color); box-shadow: 0 5px 18px #0002; transform: translateY(-2px); outline: none; }
+        .meal-tile:focus-visible { box-shadow: 0 0 0 2px var(--primary-color); }
+        .meal-tile[aria-pressed="true"] { border: 2px solid var(--primary-color); background: var(--primary-background-color); }
+        .meal-tile-name { width: 100%; font-size: 1rem; font-weight: 700; line-height: 1.35; overflow-wrap: anywhere; }
+        .meal-tile-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 12px; color: var(--secondary-text-color); font-size: .8rem; }
+        .meal-tile-meta span { border-radius: 999px; padding: 4px 8px; background: var(--primary-background-color); }
+        .meal-tile-current { position: absolute; top: 8px; right: 8px; color: var(--primary-color); font-size: .76rem; font-weight: 700; }
+        .picker-empty { display: grid; place-items: center; min-height: 220px; text-align: center; color: var(--secondary-text-color); }
+        .picker-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; border-top: 1px solid var(--divider-color); }
+        .picker-pages { display: flex; align-items: center; gap: 10px; }
+        .picker-page-count { min-width: 140px; text-align: center; color: var(--secondary-text-color); font-size: .9rem; }
+        .picker-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+        .picker-saving { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; border-radius: inherit; background: color-mix(in srgb, var(--card-background-color, var(--primary-background-color)) 84%, transparent); font-weight: 700; }
+        .picker-error { margin: -4px 0 12px; padding: 10px 12px; border-radius: 9px; color: var(--error-color); background: var(--secondary-background-color); }
+        @keyframes picker-fade { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes picker-rise { from { transform: translateY(8px); opacity: .7; } to { transform: translateY(0); opacity: 1; } }
         @media (max-width: 600px) {
           main { padding: 20px 12px 36px; }
           header { align-items: center; }
           header button { padding-inline: 10px; }
           .history-list li { grid-template-columns: 1fr auto; }
           .history-list li span:last-child { grid-column: 1 / -1; }
+          .week-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+          .day-card { min-height: 124px; }
+          .picker-backdrop { padding: 0; }
+          .picker-dialog { width: 100%; height: 100%; max-height: 100dvh; padding: max(14px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom)); border-radius: 0; }
+          .picker-heading h2 { font-size: 1.25rem; }
+          .picker-tools { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 14px 0 10px; }
+          .picker-search { grid-column: 1 / -1; }
+          .picker-tools > button { min-height: 44px; }
+          .picker-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(124px, auto); gap: 9px; }
+          .meal-tile { min-height: 124px; padding: 12px; }
+          .meal-tile-name { font-size: .94rem; }
+          .picker-footer { align-items: stretch; flex-direction: column; gap: 10px; }
+          .picker-pages { justify-content: space-between; }
+          .picker-actions { display: grid; grid-template-columns: 1fr 1fr; }
+          .picker-actions button { min-height: 46px; }
+        }
+        @media (min-width: 601px) and (max-width: 980px) {
+          .week-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+          .picker-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+          .picker-tools { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+          .picker-search { grid-column: span 2; }
         }
       </style>
       <main>
@@ -264,6 +359,15 @@ class KitchenManagerPanel extends HTMLElement {
         ${this._modal ? this._renderModal() : ""}
       </main>`;
     this._bindEvents();
+    if (focusKey) {
+      const restored = this.shadowRoot.querySelector(`[data-focus-key="${focusKey}"]`);
+      restored?.focus();
+      if (typeof selectionStart === "number" && typeof selectionEnd === "number") {
+        restored?.setSelectionRange?.(selectionStart, selectionEnd);
+      }
+    } else if (this._modal?.type === "picker") {
+      this.shadowRoot.querySelector("[data-picker-search]")?.focus();
+    }
   }
 
   _renderKitchen(products, transactions) {
@@ -330,21 +434,264 @@ class KitchenManagerPanel extends HTMLElement {
   }
 
   _plannerDay(day) {
-    const mealOptions = this._meals.filter((meal) => meal.eligible_weekdays.includes(day.weekday));
-    const options = mealOptions.map((meal) => `<option value="${this._escape(meal.id)}" ${day.meal_id === meal.id && !(day.recurring && day.mode === "override") ? "selected" : ""}>${this._escape(meal.name)}</option>`).join("");
-    const recurrenceOption = day.recurring
-      ? `<option value="__recurrence__" ${day.mode === "override" ? "selected" : ""}>Use recurrence: ${this._escape(day.recurrence_meal_name || "scheduled meal")}</option>`
-      : "";
-    return `<article class="day-card">
-      <h3>${this._weekdayNames[day.weekday]} <span class="muted">${this._escape(this._formatDate(day.date, true))}</span></h3>
-      <div class="day-mode">${day.mode}${day.recurring && day.mode !== "recurring" ? " · recurring" : ""}</div>
-      <div class="day-meal">${this._escape(day.meal_name || "Unplanned")}</div>
-      <select aria-label="Meal for ${this._weekdayNames[day.weekday]} ${this._escape(day.date)}" data-day-select="${this._escape(day.date)}">
-        <option value="">Unplanned</option>${recurrenceOption}${options}
-      </select>
-      <div class="actions"><button type="button" data-action="assign-day" data-date="${this._escape(day.date)}">Save day</button>
-      <button class="secondary" type="button" data-action="shuffle-day" data-date="${this._escape(day.date)}" ${mealOptions.length < 2 ? "disabled" : ""}>Shuffle</button></div>
-    </article>`;
+    const status = this._dayStatus(day);
+    return `<button type="button" class="day-card" data-action="open-picker" data-day-date="${this._escape(day.date)}" aria-label="${this._weekdayNames[day.weekday]}, ${this._formatDate(day.date)}: ${this._escape(day.meal_name || "Unplanned")}, ${status}" aria-haspopup="dialog">
+      <span class="day-date">${this._escape(this._formatDate(day.date, true))}</span>
+      <h3>${this._weekdayNames[day.weekday]}</h3>
+      <span class="day-meal">${this._escape(day.meal_name || "Unplanned")}</span>
+      <span class="day-status" data-status="${status.toLowerCase()}">${status}</span>
+    </button>`;
+  }
+
+  _dayStatus(day) {
+    if (day.mode === "recurring") return "Recurring";
+    if (day.mode === "random") return "Random";
+    if (day.mode === "fixed") return "Fixed";
+    if (day.mode === "override") return day.meal_id ? "Fixed · Recurrence override" : "Unplanned · Recurrence override";
+    return "Unplanned";
+  }
+
+  _openPicker(day) {
+    this._picker = {
+      date: day,
+      search: "",
+      effort: "any",
+      maxTime: "",
+      eligibleOnly: true,
+      page: 1,
+      order: this._meals.map((meal) => meal.id),
+    };
+    this._pickerSaving = false;
+    this._error = "";
+    this._modal = { type: "picker" };
+    this._render();
+  }
+
+  _closePicker() {
+    const day = this._picker?.date;
+    this._picker = null;
+    this._pickerSaving = false;
+    this._modal = null;
+    this._returnToPicker = false;
+    this._render();
+    if (day) {
+      this.shadowRoot.querySelector(`[data-day-date="${day}"]`)?.focus();
+    }
+  }
+
+  _filteredPickerMeals() {
+    if (!this._picker) return [];
+    const query = this._picker.search.trim().toLocaleLowerCase();
+    const maxTime = this._picker.maxTime === "" ? null : Number(this._picker.maxTime);
+    const assignedMealId = this._planner.weeks
+      .flatMap((week) => week.days)
+      .find((day) => day.date === this._picker.date)?.meal_id;
+    const byId = new Map(this._meals.map((meal) => [meal.id, meal]));
+    const ordered = [
+      ...this._picker.order.map((id) => byId.get(id)).filter(Boolean),
+      ...this._meals.filter((meal) => !this._picker.order.includes(meal.id)),
+    ];
+    return ordered.filter((meal) =>
+      (!query || meal.name.toLocaleLowerCase().includes(query))
+      && (this._picker.effort === "any" || meal.effort === this._picker.effort)
+      && (maxTime === null || meal.time_minutes <= maxTime)
+      && (!this._picker.eligibleOnly || meal.eligible_weekdays.includes(this._weekdayIndex(this._picker.date)) || meal.id === assignedMealId)
+    );
+  }
+
+  _shufflePickerOrder() {
+    if (!this._picker) return;
+    const visibleIds = this._filteredPickerMeals().map((meal) => meal.id);
+    const shuffled = [...visibleIds];
+    for (let index = shuffled.length - 1; index > 0; index -= 1) {
+      const other = Math.floor(Math.random() * (index + 1));
+      [shuffled[index], shuffled[other]] = [shuffled[other], shuffled[index]];
+    }
+    if (shuffled.length > 1 && shuffled.every((id, index) => id === visibleIds[index])) {
+      [shuffled[0], shuffled[1]] = [shuffled[1], shuffled[0]];
+    }
+    const visibleSet = new Set(visibleIds);
+    this._picker.order = [
+      ...shuffled,
+      ...this._picker.order.filter((id) => !visibleSet.has(id)),
+    ];
+    this._picker.page = 1;
+    this._render();
+  }
+
+  _renderPicker() {
+    const picker = this._picker;
+    if (!picker) return "";
+    const matches = this._filteredPickerMeals();
+    const pageCount = Math.max(1, Math.ceil(matches.length / 25));
+    picker.page = Math.min(Math.max(picker.page, 1), pageCount);
+    const pageMeals = matches.slice((picker.page - 1) * 25, picker.page * 25);
+    const selected = this._planner.weeks
+      .flatMap((week) => week.days)
+      .find((day) => day.date === picker.date);
+    const titleDate = selected
+      ? `${this._weekdayNames[selected.weekday]}, ${this._formatDate(selected.date)}`
+      : this._formatDate(picker.date);
+    return `<div class="picker-backdrop" data-action="picker-backdrop">
+      <section class="picker-dialog" role="dialog" aria-modal="true" aria-labelledby="picker-title" aria-describedby="picker-description" tabindex="-1">
+        <div class="picker-heading">
+          <div><h2 id="picker-title">Choose a meal</h2><p id="picker-description">${this._escape(titleDate)} · ${this._escape(selected?.meal_name ? `Currently ${selected.meal_name}` : "Currently unplanned")}</p></div>
+          <button class="secondary" type="button" data-action="close-picker" aria-label="Close meal picker" ${this._pickerSaving ? "disabled" : ""}>Close</button>
+        </div>
+        <div class="picker-tools">
+          <label class="picker-search">Search meals
+            <input data-picker-search data-focus-key="picker-search" type="search" autocomplete="off" placeholder="Search recipe names" value="${this._escape(picker.search)}">
+          </label>
+          <label>Effort
+            <select data-picker-effort data-focus-key="picker-effort">
+              ${[["any", "Any effort"], ["low", "Low"], ["medium", "Medium"], ["high", "High"]].map(([value, label]) => `<option value="${value}" ${picker.effort === value ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+          </label>
+          <label>Maximum time (minutes)
+            <input data-picker-time data-focus-key="picker-time" type="number" min="0" step="1" placeholder="Any time" value="${this._escape(picker.maxTime)}">
+          </label>
+          <label class="eligible-toggle"><input data-picker-eligible data-focus-key="picker-eligible" type="checkbox" ${picker.eligibleOnly ? "checked" : ""}> Eligible for ${this._weekdayNames[this._weekdayIndex(picker.date)]}</label>
+          <button class="secondary" type="button" data-action="shuffle-picker" title="Shuffle the displayed recipes">Shuffle</button>
+        </div>
+        ${this._error ? `<div class="picker-error" role="alert">${this._escape(this._error)}</div>` : ""}
+        ${pageMeals.length ? `<div class="picker-grid" aria-label="Meals, page ${picker.page}">${pageMeals.map((meal) => `
+          <button type="button" class="meal-tile" data-action="choose-meal" data-meal-id="${this._escape(meal.id)}" aria-pressed="${selected?.meal_id === meal.id}" ${this._pickerSaving ? "disabled" : ""}>
+            ${selected?.meal_id === meal.id ? `<span class="meal-tile-current">Currently assigned</span>` : ""}
+            <span class="meal-tile-name">${this._escape(meal.name)}</span>
+            <span class="meal-tile-meta"><span>${this._escape(meal.effort[0].toUpperCase() + meal.effort.slice(1))}</span>${meal.time_minutes > 0 ? `<span>${meal.time_minutes} min</span>` : ""}</span>
+          </button>`).join("")}</div>` : `<div class="picker-empty" role="status"><div><strong>${this._meals.length ? "No meals match these options" : "Your meal collection is empty"}</strong><p>${this._meals.length ? "Try another search or adjust the filters." : "Create a meal to start filling your planner."}</p></div></div>`}
+        <div class="picker-footer">
+          <div class="picker-pages">
+            <button class="secondary" type="button" data-action="picker-previous" ${picker.page <= 1 || this._pickerSaving ? "disabled" : ""}>Previous</button>
+            <span class="picker-page-count">Page ${picker.page} of ${pageCount} — ${matches.length} ${matches.length === 1 ? "meal" : "meals"}</span>
+            <button class="secondary" type="button" data-action="picker-next" ${picker.page >= pageCount || this._pickerSaving ? "disabled" : ""}>Next</button>
+          </div>
+          <div class="picker-actions">
+            ${selected?.recurring && selected.mode !== "recurring" ? `<button class="secondary" type="button" data-action="restore-recurrence" ${this._pickerSaving ? "disabled" : ""}>Use recurring meal</button>` : ""}
+            <button class="secondary" type="button" data-action="clear-picker-day" ${this._pickerSaving ? "disabled" : ""}>${selected?.meal_id ? "Clear day" : "Leave unplanned"}</button>
+            <button class="secondary" type="button" data-action="picker-add-meal" ${this._pickerSaving ? "disabled" : ""}>Add new meal</button>
+          </div>
+        </div>
+        ${this._pickerSaving ? `<div class="picker-saving" role="status">Saving meal…</div>` : ""}
+      </section>
+    </div>`;
+  }
+
+  _weekdayIndex(day) {
+    const date = new Date(`${day}T12:00:00`);
+    return Number.isNaN(date.valueOf()) ? 0 : (date.getDay() + 6) % 7;
+  }
+
+  async _choosePickerMeal(mealId) {
+    if (!this._picker || this._pickerSaving) return;
+    this._pickerSaving = true;
+    this._error = "";
+    this._render();
+    try {
+      const updatedDay = await this._request("planner/set", {
+        date: this._picker.date,
+        meal_id: mealId,
+        allow_ineligible: !this._picker.eligibleOnly,
+      });
+      this._updatePlannerDay(updatedDay);
+      this._closePicker();
+      await this._loadMeals();
+    } catch (error) {
+      this._pickerSaving = false;
+      this._error = error.message || "The meal could not be saved. Your previous selection is unchanged.";
+      this._render();
+    }
+  }
+
+  async _clearPickerDay() {
+    if (!this._picker || this._pickerSaving) return;
+    this._pickerSaving = true;
+    this._error = "";
+    this._render();
+    try {
+      const updatedDay = await this._request("planner/set", {
+        date: this._picker.date,
+        meal_id: null,
+      });
+      this._updatePlannerDay(updatedDay);
+      this._closePicker();
+      await this._loadMeals();
+    } catch (error) {
+      this._pickerSaving = false;
+      this._error = error.message || "The day could not be cleared. Your previous selection is unchanged.";
+      this._render();
+    }
+  }
+
+  async _restorePickerRecurrence() {
+    if (!this._picker || this._pickerSaving) return;
+    this._pickerSaving = true;
+    this._error = "";
+    this._render();
+    try {
+      const updatedDay = await this._request("planner/set", {
+        date: this._picker.date,
+        meal_id: null,
+        use_recurrence: true,
+      });
+      this._updatePlannerDay(updatedDay);
+      this._closePicker();
+      await this._loadMeals();
+    } catch (error) {
+      this._pickerSaving = false;
+      this._error = error.message || "The recurring meal could not be restored. Your previous selection is unchanged.";
+      this._render();
+    }
+  }
+
+  _updatePlannerDay(day) {
+    if (!day?.date) return;
+    for (const week of this._planner.weeks) {
+      const index = week.days.findIndex((entry) => entry.date === day.date);
+      if (index !== -1) {
+        week.days[index] = day;
+        return;
+      }
+    }
+  }
+
+  _handleDialogKeydown(event) {
+    if (!this._modal) return;
+    if (event.key === "Escape") {
+      if (this._pickerSaving) return;
+      event.preventDefault();
+      if (this._modal.type === "picker") {
+        this._closePicker();
+      } else {
+        this._closeModal();
+      }
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const dialog = this.shadowRoot.querySelector('[role="dialog"]');
+    if (!dialog) return;
+    const focusable = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')];
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && this.shadowRoot.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && this.shadowRoot.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  _closeModal() {
+    if (this._modal?.type === "meal" && this._returnToPicker) {
+      this._modal = { type: "picker" };
+      this._returnToPicker = false;
+      this._render();
+      return;
+    }
+    this._modal = null;
+    this._render();
   }
 
   get _weekdayNames() {
@@ -402,6 +749,9 @@ class KitchenManagerPanel extends HTMLElement {
   }
 
   _renderModal() {
+    if (this._modal.type === "picker") {
+      return this._renderPicker();
+    }
     if (this._modal.type === "meal") {
       const meal = this._modal.meal;
       const eligible = meal?.eligible_weekdays || [0, 1, 2, 3, 4, 5, 6];
@@ -516,6 +866,30 @@ class KitchenManagerPanel extends HTMLElement {
     this.shadowRoot.querySelectorAll("form").forEach((form) => {
       form.addEventListener("submit", (event) => this._handleSubmit(event));
     });
+    const search = this.shadowRoot.querySelector("[data-picker-search]");
+    search?.addEventListener("input", () => {
+      this._picker.search = search.value;
+      this._picker.page = 1;
+      this._render();
+    });
+    const effort = this.shadowRoot.querySelector("[data-picker-effort]");
+    effort?.addEventListener("change", () => {
+      this._picker.effort = effort.value;
+      this._picker.page = 1;
+      this._render();
+    });
+    const maxTime = this.shadowRoot.querySelector("[data-picker-time]");
+    maxTime?.addEventListener("input", () => {
+      this._picker.maxTime = maxTime.value;
+      this._picker.page = 1;
+      this._render();
+    });
+    const eligible = this.shadowRoot.querySelector("[data-picker-eligible]");
+    eligible?.addEventListener("change", () => {
+      this._picker.eligibleOnly = eligible.checked;
+      this._picker.page = 1;
+      this._render();
+    });
   }
 
   async _handleAction(event) {
@@ -524,7 +898,10 @@ class KitchenManagerPanel extends HTMLElement {
     if (action === "backdrop" && event.target !== element) {
       return;
     }
-    if (action === "navigate") {
+    if (action === "picker-backdrop") {
+      if (event.target === element && !this._pickerSaving) this._closePicker();
+      return;
+    } else if (action === "navigate") {
       await this._navigate(element.dataset.view);
       return;
     } else if (action === "create") {
@@ -544,6 +921,7 @@ class KitchenManagerPanel extends HTMLElement {
       };
     } else if (action === "create-meal") {
       this._mealIngredients = [];
+      this._returnToPicker = this._picker !== null;
       this._modal = { type: "meal" };
     } else if (action === "edit-meal") {
       const meal = this._meals.find((item) => item.id === element.dataset.mealId);
@@ -577,21 +955,36 @@ class KitchenManagerPanel extends HTMLElement {
         this._render();
       }
       return;
-    } else if (action === "assign-day") {
-      const date = element.dataset.date;
-      const select = this.shadowRoot.querySelector(`[data-day-select="${date}"]`);
-      try {
-        await this._request("planner/set", {
-          date,
-          ...(select.value === "__recurrence__"
-            ? { use_recurrence: true }
-            : { meal_id: select.value || null }),
-        });
-        await this._loadMeals();
-      } catch (error) {
-        this._error = error.message || "The planner date could not be saved.";
-        this._render();
-      }
+    } else if (action === "open-picker") {
+      this._openPicker(element.dataset.dayDate);
+      return;
+    } else if (action === "close-picker") {
+      this._closePicker();
+      return;
+    } else if (action === "choose-meal") {
+      await this._choosePickerMeal(element.dataset.mealId);
+      return;
+    } else if (action === "clear-picker-day") {
+      await this._clearPickerDay();
+      return;
+    } else if (action === "restore-recurrence") {
+      await this._restorePickerRecurrence();
+      return;
+    } else if (action === "shuffle-picker") {
+      this._shufflePickerOrder();
+      return;
+    } else if (action === "picker-previous" || action === "picker-next") {
+      const maxPage = Math.max(1, Math.ceil(this._filteredPickerMeals().length / 25));
+      this._picker.page += action === "picker-next" ? 1 : -1;
+      this._picker.page = Math.min(Math.max(this._picker.page, 1), maxPage);
+      this._render();
+      this.shadowRoot.querySelector('[data-action="picker-previous"]')?.focus();
+      return;
+    } else if (action === "picker-add-meal") {
+      this._mealIngredients = [];
+      this._returnToPicker = true;
+      this._modal = { type: "meal" };
+      this._render();
       return;
     } else if (action === "shuffle-day") {
       try {
@@ -603,7 +996,8 @@ class KitchenManagerPanel extends HTMLElement {
       }
       return;
     } else if (action === "close" || action === "backdrop") {
-      this._modal = null;
+      this._closeModal();
+      return;
     } else if (action === "refresh") {
       await (this._view === "meals" ? this._loadMeals() : this._view === "shopping" ? this._loadShopping() : this._load());
       return;
@@ -677,7 +1071,9 @@ class KitchenManagerPanel extends HTMLElement {
           instructions: String(data.get("instructions") || "").trim() || null,
           recurrence,
         });
-        this._modal = null;
+        const returnToPicker = this._returnToPicker;
+        this._returnToPicker = false;
+        this._modal = returnToPicker ? { type: "picker" } : null;
         this._mealIngredients = [];
         await this._loadMeals();
         return;

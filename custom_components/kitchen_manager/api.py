@@ -318,6 +318,7 @@ async def websocket_generate_planner(
         vol.Required("date"): cv.string,
         vol.Optional("meal_id"): vol.Any(None, cv.string),
         vol.Optional("use_recurrence", default=False): cv.boolean,
+        vol.Optional("allow_ineligible", default=False): cv.boolean,
     }
 )
 @websocket_api.async_response
@@ -332,6 +333,7 @@ async def websocket_set_planner_day(
             day=msg["date"],
             meal_id=msg.get("meal_id"),
             use_recurrence=msg["use_recurrence"],
+            allow_ineligible=msg["allow_ineligible"],
         )
     except (MealError, ModelValidationError) as err:
         _raise_user_error(err)

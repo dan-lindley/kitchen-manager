@@ -231,6 +231,21 @@ async def test_recurrence_weekday_must_be_recipe_eligible(
         )
 
 
+async def test_manual_ineligible_assignment_requires_explicit_override(
+    planner: MealPlanner,
+) -> None:
+    meal = await _save(planner, "Sunday roast", days=[6])
+
+    with pytest.raises(MealError, match="not eligible"):
+        await planner.async_assign(day="2025-03-03", meal_id=meal["id"])
+
+    assigned = await planner.async_assign(
+        day="2025-03-03", meal_id=meal["id"], allow_ineligible=True
+    )
+    assert assigned["meal_id"] == meal["id"]
+    assert assigned["mode"] == "fixed"
+
+
 async def test_recurrence_starts_on_next_matching_weekday(
     planner: MealPlanner,
 ) -> None:
