@@ -283,6 +283,7 @@ class KitchenManagerPanel extends HTMLElement {
         .day-status[data-status="fixed"] { color: var(--primary-color); }
         .day-status[data-status="random"] { color: var(--success-color, var(--primary-color)); }
         .day-status[data-status="recurring"] { color: var(--accent-color, var(--primary-color)); }
+        .day-warning { align-self: flex-start; color: var(--warning-color, var(--error-color)); font-size: .75rem; font-weight: 650; }
         .picker-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 18px; background: rgb(0 0 0 / 58%); animation: picker-fade 140ms ease-out; }
         .picker-dialog { display: flex; flex-direction: column; width: min(1180px, 100%); max-height: min(92vh, 960px); overflow: hidden; padding: clamp(18px, 3vw, 30px); border-radius: 20px; color: var(--primary-text-color); background: var(--card-background-color, var(--primary-background-color)); box-shadow: var(--ha-dialog-box-shadow, 0 16px 54px #0006); animation: picker-rise 160ms ease-out; }
         .picker-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
@@ -435,11 +436,12 @@ class KitchenManagerPanel extends HTMLElement {
 
   _plannerDay(day) {
     const status = this._dayStatus(day);
-    return `<button type="button" class="day-card" data-action="open-picker" data-day-date="${this._escape(day.date)}" aria-label="${this._weekdayNames[day.weekday]}, ${this._formatDate(day.date)}: ${this._escape(day.meal_name || "Unplanned")}, ${status}" aria-haspopup="dialog">
+    return `<button type="button" class="day-card" data-action="open-picker" data-day-date="${this._escape(day.date)}" aria-label="${this._weekdayNames[day.weekday]}, ${this._formatDate(day.date)}: ${this._escape(day.meal_name || "Unplanned")}, ${status}${day.meal_eligible === false ? ", outside eligible weekdays" : ""}" aria-haspopup="dialog">
       <span class="day-date">${this._escape(this._formatDate(day.date, true))}</span>
       <h3>${this._weekdayNames[day.weekday]}</h3>
       <span class="day-meal">${this._escape(day.meal_name || "Unplanned")}</span>
       <span class="day-status" data-status="${status.toLowerCase()}">${status}</span>
+      ${day.meal_eligible === false ? `<span class="day-warning">Outside eligible weekdays</span>` : ""}
     </button>`;
   }
 
@@ -483,9 +485,13 @@ class KitchenManagerPanel extends HTMLElement {
     if (!this._picker) return [];
     const query = this._picker.search.trim().toLocaleLowerCase();
     const maxTime = this._picker.maxTime === "" ? null : Number(this._picker.maxTime);
-    const assignedMealId = this._planner.weeks
+    const selectedDay = this._planner.weeks
       .flatMap((week) => week.days)
-      .find((day) => day.date === this._picker.date)?.meal_id;
+      .find((day) => day.date === this._picker.date);
+    const assignedMealId = selectedDay?.meal_id;
+    const eligibleMealIds = new Set(
+      this._planner.eligible_meal_ids_by_weekday?.[String(selectedDay?.weekday)] || [],
+    );
     const byId = new Map(this._meals.map((meal) => [meal.id, meal]));
     const ordered = [
       ...this._picker.order.map((id) => byId.get(id)).filter(Boolean),
@@ -495,7 +501,7 @@ class KitchenManagerPanel extends HTMLElement {
       (!query || meal.name.toLocaleLowerCase().includes(query))
       && (this._picker.effort === "any" || meal.effort === this._picker.effort)
       && (maxTime === null || meal.time_minutes <= maxTime)
-      && (!this._picker.eligibleOnly || meal.eligible_weekdays.includes(this._weekdayIndex(this._picker.date)) || meal.id === assignedMealId)
+      && (!this._picker.eligibleOnly || eligibleMealIds.has(meal.id) || meal.id === assignedMealId)
     );
   }
 
@@ -550,7 +556,7 @@ class KitchenManagerPanel extends HTMLElement {
           <label>Maximum time (minutes)
             <input data-picker-time data-focus-key="picker-time" type="number" min="0" step="1" placeholder="Any time" value="${this._escape(picker.maxTime)}">
           </label>
-          <label class="eligible-toggle"><input data-picker-eligible data-focus-key="picker-eligible" type="checkbox" ${picker.eligibleOnly ? "checked" : ""}> Eligible for ${this._weekdayNames[this._weekdayIndex(picker.date)]}</label>
+          <label class="eligible-toggle"><input data-picker-eligible data-focus-key="picker-eligible" type="checkbox" ${picker.eligibleOnly ? "checked" : ""}> Eligible for ${this._weekdayNames[selected?.weekday ?? this._weekdayIndex(picker.date)]}</label>
           <button class="secondary" type="button" data-action="shuffle-picker" title="Shuffle the displayed recipes">Shuffle</button>
         </div>
         ${this._error ? `<div class="picker-error" role="alert">${this._escape(this._error)}</div>` : ""}
@@ -948,8 +954,13 @@ class KitchenManagerPanel extends HTMLElement {
       }
     } else if (action === "generate-planner") {
       try {
-        await this._request("planner/generate");
+        const result = await this._request("planner/generate");
         await this._loadMeals();
+        if (result.unavailable_dates?.length) {
+          const dates = result.unavailable_dates.map((day) => this._formatDate(day, true));
+          this._error = `No meals are eligible on ${dates.join(", ")}. Those dates were left unplanned.`;
+          this._render();
+        }
       } catch (error) {
         this._error = error.message || "Suggestions could not be generated.";
         this._render();

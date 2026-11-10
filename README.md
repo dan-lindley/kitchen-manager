@@ -44,10 +44,23 @@ products that currently have no stock; they are not substituted or grouped.
 
 Choose a meal for an individual date, mark that date unplanned, generate
 suggestions for eligible open dates, or shuffle one date without changing
-other selections. Generated choices are saved and do not change on refresh.
-Random selection avoids meals assigned in the previous seven days when an
-alternative is available. If no eligible recipe exists, a date remains
-unplanned.
+other selections. Eligibility is checked against the actual calendar date,
+using Monday `0` through Sunday `6`, in the backend. The picker uses that same
+backend eligibility result. Generated choices are saved and do not change on
+refresh.
+
+Suggestions prefer recipes not used in the previous seven days and avoid
+repeating the immediately preceding meal when another eligible recipe exists.
+With a small catalogue, repetition is allowed rather than leaving an otherwise
+eligible date empty. If no eligible recipe exists, a date remains unplanned
+and the planner explains which dates could not be filled. Existing selections
+are preserved when recipe eligibility changes; a saved selection outside the
+current weekday rules is marked until explicitly changed. Manual selections
+can still override weekday eligibility.
+
+Planner days do not currently have configurable maximum-effort or
+maximum-cooking-time restrictions. The meal picker's optional time filter is
+for browsing only and does not change automatic planner suggestions.
 
 A meal can repeat weekly, every two weeks, or every four weeks on one eligible
 weekday. Each date occurrence can be overridden or explicitly left unplanned

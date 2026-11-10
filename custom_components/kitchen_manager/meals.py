@@ -244,17 +244,7 @@ class MealPlanner:
     def get_planner(self, *, today: date | None = None) -> dict[str, Any]:
         """Return four complete Monday-to-Sunday weeks."""
         current = today or date.today()
-        first_day = _week_start(current)
-        data = self._storage.data
-        weeks: list[dict[str, Any]] = []
-        for week_number in range(4):
-            week_start = first_day + timedelta(weeks=week_number)
-            days = [
-                self._day_dict(data, week_start + timedelta(days=offset))
-                for offset in range(7)
-            ]
-            weeks.append({"start_date": week_start.isoformat(), "days": days})
-        return {"weeks": weeks, "start_date": first_day.isoformat()}
+        return self._planner_from_data(self._storage.data, current)
 
     async def async_generate(
         self, *, today: date | None = None
@@ -265,20 +255,17 @@ class MealPlanner:
 
         def mutate(data: KitchenManagerData) -> tuple[dict[str, Any], bool]:
             changed = False
+            unavailable_dates: list[str] = []
             for offset in range(28):
                 day = first_day + timedelta(days=offset)
                 if day < current or day.isoformat() in data.planner:
                     continue
                 if self._recurring_meal(data, day) is not None:
                     continue
-                candidates = self._eligible_meals(data, day)
-                if not candidates:
+                choice = self._choose_suggestion(data, day)
+                if choice is None:
+                    unavailable_dates.append(day.isoformat())
                     continue
-                recent_ids = self._recent_meal_ids(data, day)
-                less_repetitive = [
-                    meal for meal in candidates if meal.id not in recent_ids
-                ]
-                choice = self._chooser(less_repetitive or candidates)
                 data.planner[day.isoformat()] = PlannerEntry(
                     date=day.isoformat(),
                     mode=PlannerMode.RANDOM,
@@ -286,7 +273,9 @@ class MealPlanner:
                     meal_name=choice.name,
                 )
                 changed = True
-            return self._planner_from_data(data, current), changed
+            result = self._planner_from_data(data, current)
+            result["unavailable_dates"] = unavailable_dates
+            return result, changed
 
         return await self._storage.async_update(mutate)
 
@@ -320,10 +309,7 @@ class MealPlanner:
                 meal = data.meals.get(meal_id)
                 if meal is None:
                     raise MealError("Choose a meal that still exists.")
-                if (
-                    selected_day.weekday() not in meal.eligible_weekdays
-                    and not allow_ineligible
-                ):
+                if not self._is_eligible_on(meal, selected_day) and not allow_ineligible:
                     raise MealError("That meal is not eligible on this weekday.")
                 mode = PlannerMode.OVERRIDE if recurrence else PlannerMode.FIXED
                 meal_name = meal.name
@@ -355,16 +341,11 @@ class MealPlanner:
                     else None
                 )
             )
-            candidates = [
-                meal
-                for meal in self._eligible_meals(data, selected_day)
-                if meal.id != current_meal_id
-            ]
-            if not candidates:
+            selected = self._choose_suggestion(
+                data, selected_day, exclude_meal_id=current_meal_id
+            )
+            if selected is None:
                 raise MealError("No other eligible meal is available to shuffle to.")
-            recent = self._recent_meal_ids(data, selected_day)
-            less_repetitive = [meal for meal in candidates if meal.id not in recent]
-            selected = self._chooser(less_repetitive or candidates)
             has_recurrence = self._recurring_meal(data, selected_day) is not None
             data.planner[day] = PlannerEntry(
                 date=day,
@@ -395,11 +376,65 @@ class MealPlanner:
 
     @staticmethod
     def _eligible_meals(data: KitchenManagerData, day: date) -> list[Meal]:
+        """Return meals eligible on the actual date (Monday=0 through Sunday=6)."""
         return [
             meal
             for meal in data.meals.values()
-            if day.weekday() in meal.eligible_weekdays
+            if MealPlanner._is_eligible_on(meal, day)
         ]
+
+    @staticmethod
+    def _is_eligible_on(meal: Meal, day: date) -> bool:
+        """Check eligibility against Python's Monday-zero calendar weekday."""
+        return day.weekday() in meal.eligible_weekdays
+
+    def _choose_suggestion(
+        self,
+        data: KitchenManagerData,
+        day: date,
+        *,
+        exclude_meal_id: str | None = None,
+    ) -> Meal | None:
+        """Choose an eligible meal, preferring choices outside recent history."""
+        candidates = [
+            meal
+            for meal in self._eligible_meals(data, day)
+            if meal.id != exclude_meal_id
+        ]
+        if not candidates:
+            return None
+        recent_ids = self._recent_meal_ids(data, day)
+        less_repetitive = [
+            meal for meal in candidates if meal.id not in recent_ids
+        ]
+        pool = less_repetitive
+        if not pool:
+            previous_meal_id = self._meal_id_on(data, day - timedelta(days=1))
+            pool = [
+                meal for meal in candidates if meal.id != previous_meal_id
+            ] or candidates
+        selected = self._chooser(pool)
+        if (
+            selected not in pool
+            or selected not in candidates
+            or not self._is_eligible_on(selected, day)
+        ):
+            raise MealError(f"The selected meal is not eligible on {day.isoformat()}.")
+        return selected
+
+    @classmethod
+    def _eligible_meal_ids_by_weekday(
+        cls, data: KitchenManagerData
+    ) -> dict[str, list[str]]:
+        """Expose the backend's eligibility results for the picker."""
+        monday = date(2024, 1, 1)
+        return {
+            str(weekday): [
+                meal.id
+                for meal in cls._eligible_meals(data, monday + timedelta(days=weekday))
+            ]
+            for weekday in range(7)
+        }
 
     @staticmethod
     def _recurring_meal(data: KitchenManagerData, day: date) -> Meal | None:
@@ -410,7 +445,7 @@ class MealPlanner:
             weeks = (day - _week_start(anchor)).days // 7
             if weeks % rule.interval_weeks == 0:
                 meal = data.meals.get(rule.meal_id)
-                if meal and day.weekday() in meal.eligible_weekdays:
+                if meal and MealPlanner._is_eligible_on(meal, day):
                     return meal
         return None
 
@@ -419,15 +454,18 @@ class MealPlanner:
         recent: set[str] = set()
         for offset in range(1, 8):
             previous = day - timedelta(days=offset)
-            entry = data.planner.get(previous.isoformat())
-            if entry:
-                if entry.meal_id:
-                    recent.add(entry.meal_id)
-            else:
-                recurring = MealPlanner._recurring_meal(data, previous)
-                if recurring:
-                    recent.add(recurring.id)
+            meal_id = MealPlanner._meal_id_on(data, previous)
+            if meal_id:
+                recent.add(meal_id)
         return recent
+
+    @staticmethod
+    def _meal_id_on(data: KitchenManagerData, day: date) -> str | None:
+        entry = data.planner.get(day.isoformat())
+        if entry:
+            return entry.meal_id
+        recurring = MealPlanner._recurring_meal(data, day)
+        return recurring.id if recurring else None
 
     @classmethod
     def _day_dict(cls, data: KitchenManagerData, day: date) -> dict[str, Any]:
@@ -442,6 +480,9 @@ class MealPlanner:
                 "mode": str(entry.mode),
                 "meal_id": entry.meal_id,
                 "meal_name": meal.name if meal else entry.meal_name,
+                "meal_eligible": (
+                    cls._is_eligible_on(meal, day) if meal else None
+                ),
                 "recurring": recurring is not None,
                 "recurrence_meal_id": recurring.id if recurring else None,
                 "recurrence_meal_name": recurring.name if recurring else None,
@@ -452,6 +493,9 @@ class MealPlanner:
             "mode": "recurring" if recurring else "unplanned",
             "meal_id": recurring.id if recurring else None,
             "meal_name": recurring.name if recurring else None,
+            "meal_eligible": (
+                cls._is_eligible_on(recurring, day) if recurring else None
+            ),
             "recurring": recurring is not None,
             "recurrence_meal_id": recurring.id if recurring else None,
             "recurrence_meal_name": recurring.name if recurring else None,
@@ -474,4 +518,5 @@ class MealPlanner:
                 for index in range(4)
             ],
             "start_date": first_day.isoformat(),
+            "eligible_meal_ids_by_weekday": cls._eligible_meal_ids_by_weekday(data),
         }

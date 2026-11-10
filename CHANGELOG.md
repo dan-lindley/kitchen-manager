@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2
+
+- Centralized automatic meal eligibility and selection for planner generation
+  and per-day shuffle, using the actual calendar weekday (Monday `0` through
+  Sunday `6`).
+- Made the picker consume backend-computed eligibility results instead of
+  independently recalculating weekdays in JavaScript.
+- Improved variety by preferring meals unused in the previous seven days and
+  avoiding immediate repeats when another eligible choice exists.
+- Preserved existing assignments when eligibility changes, visibly marked
+  saved meals outside current weekday rules, and explained unplanned dates
+  with no eligible recipe.
+
 ## 0.3.1
 
 - Replaced planner recipe dropdowns and per-day controls with clickable

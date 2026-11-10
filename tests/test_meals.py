@@ -159,16 +159,131 @@ async def test_generation_obeys_weekday_eligibility_and_is_stable(
     assert reloaded["weeks"][0]["days"][6]["meal_id"] == meal["id"]
 
 
+async def test_generation_uses_real_tuesday_and_recipe_weekdays(
+    planner: MealPlanner,
+) -> None:
+    tuesday = date(2026, 11, 10)
+    takeaway = await _save(
+        planner, "De Bao Chinese Takeaway", days=[0, 2, 3, 4, 5, 6]
+    )
+    lasagne = await _save(planner, "Lasagne", days=[0, 4])
+    await _save(planner, "Any-day fallback")
+
+    generated = await planner.async_generate(today=tuesday)
+    days = [
+        day
+        for week in generated["weeks"]
+        for day in week["days"]
+        if date.fromisoformat(day["date"]) >= tuesday
+    ]
+
+    assert date.fromisoformat("2026-11-10").weekday() == 1
+    assert generated["eligible_meal_ids_by_weekday"]["1"]
+    assert takeaway["id"] not in generated["eligible_meal_ids_by_weekday"]["1"]
+    for day in days:
+        weekday = date.fromisoformat(day["date"]).weekday()
+        assert day["weekday"] == weekday
+        if day["meal_id"] == takeaway["id"]:
+            assert weekday in takeaway["eligible_weekdays"]
+            assert weekday != 1
+        if day["meal_id"] == lasagne["id"]:
+            assert weekday in [0, 4]
+
+    tuesday_assignment = next(day for day in days if day["date"] == "2026-11-10")
+    assert tuesday_assignment["meal_id"] != takeaway["id"]
+
+
 async def test_generation_avoids_recent_repetition_when_alternatives_exist(
     planner: MealPlanner,
 ) -> None:
-    first = await _save(planner, "Pasta")
-    second = await _save(planner, "Tacos")
+    await _save(planner, "Pasta")
+    await _save(planner, "Tacos")
+    generated = await planner.async_generate(today=MONDAY)
+    days = [
+        day
+        for week in generated["weeks"]
+        for day in week["days"]
+        if date.fromisoformat(day["date"]) >= MONDAY
+    ]
+
+    assert all(
+        first_day["meal_id"] != second_day["meal_id"]
+        for first_day, second_day in zip(days, days[1:])
+    )
+
+
+async def test_generation_preserves_fixed_and_recurring_assignments(
+    planner: MealPlanner,
+) -> None:
+    recurring = await _save(
+        planner, "Tuesday soup", days=[1], recurrence={"weekday": 1, "interval_weeks": 1}
+    )
+    fixed = await _save(planner, "Wednesday roast", days=[2])
+    await planner.async_assign(day="2025-03-05", meal_id=fixed["id"])
+
     generated = await planner.async_generate(today=MONDAY)
     days = generated["weeks"][0]["days"]
 
-    assert days[0]["meal_id"] == first["id"]
-    assert days[1]["meal_id"] == second["id"]
+    assert days[1]["mode"] == "recurring"
+    assert days[1]["meal_id"] == recurring["id"]
+    assert days[2]["mode"] == "fixed"
+    assert days[2]["meal_id"] == fixed["id"]
+
+
+async def test_generation_reports_and_preserves_days_without_eligible_meals(
+    planner: MealPlanner,
+) -> None:
+    await _save(planner, "Sunday roast", days=[6])
+
+    generated = await planner.async_generate(today=MONDAY)
+    days = generated["weeks"][0]["days"]
+
+    assert "2025-03-03" in generated["unavailable_dates"]
+    assert days[0]["mode"] == "unplanned"
+    assert days[6]["mode"] == "random"
+
+
+async def test_existing_random_assignment_is_retained_when_eligibility_changes(
+    planner: MealPlanner, storage: MemoryStorage
+) -> None:
+    meal = await _save(planner, "Pasta")
+    await planner.async_generate(today=MONDAY)
+    await _save(planner, "Pasta", days=[1], meal_id=meal["id"])
+    await planner.async_generate(today=MONDAY)
+
+    monday = MealPlanner(storage).get_planner(today=MONDAY)["weeks"][0]["days"][0]
+    assert monday["mode"] == "random"
+    assert monday["meal_id"] == meal["id"]
+    assert monday["meal_eligible"] is False
+
+
+async def test_shuffle_selects_only_meals_eligible_on_requested_date(
+    planner: MealPlanner,
+) -> None:
+    await _save(planner, "Tuesday-only meal", days=[1])
+    monday_meal = await _save(planner, "Monday meal", days=[0])
+
+    shuffled = await planner.async_shuffle(day="2025-03-03", today=MONDAY)
+
+    assert shuffled["meal_id"] == monday_meal["id"]
+    assert shuffled["meal_eligible"] is True
+
+
+async def test_planner_weekday_and_picker_eligibility_use_monday_zero(
+    planner: MealPlanner,
+) -> None:
+    meals = [
+        await _save(planner, f"Weekday {weekday}", days=[weekday])
+        for weekday in range(7)
+    ]
+
+    planner_data = planner.get_planner(today=MONDAY)
+    days = planner_data["weeks"][0]["days"]
+    eligible_by_weekday = planner_data["eligible_meal_ids_by_weekday"]
+
+    for weekday, day in enumerate(days):
+        assert day["weekday"] == date.fromisoformat(day["date"]).weekday() == weekday
+        assert eligible_by_weekday[str(weekday)] == [meals[weekday]["id"]]
 
 
 async def test_recurrence_and_occurrence_override_are_persistent(
