@@ -19,12 +19,21 @@ The current panel supports:
   thresholds.
 - Opening a product detail dialog to view stock, add/consume/correct quantities,
   edit product details, and review recent transactions.
+- Grouping related product variants into expandable inventory rows without
+  merging product records or their stock. Group totals are separated by stock
+  unit and package size so incompatible package quantities are not combined.
+- Scanning or entering a barcode to add stock to its exact variant. Unknown
+  barcodes can be looked up through Open Food Facts, assigned to an explicitly
+  selected group, or registered manually when the lookup is unavailable.
 - Saving a default location per product and using it automatically for stock
   additions and corrections. A one-off managed location can be selected as an
   override.
 - Managing storage locations in **Settings**. Location identifiers remain
   stable when display names change, and locations referenced by products,
   stock, or transaction history cannot be deleted.
+- Creating and renaming product groups in **Settings**, then assigning,
+  moving, or ungrouping variants from product forms. Similar names are only
+  suggestions and never cause automatic grouping.
 - Browsing recipes in a searchable, compact, alphabetically sorted tile grid
   with effort/time filters and 25-meal pagination.
 
@@ -91,12 +100,13 @@ shopping list.
 4. Download **Kitchen Manager**, restart Home Assistant, and add the integration
    from **Settings → Devices & services → Add integration**.
 
-To update an existing HACS installation to **0.4.0**, open **HACS →
+To update an existing HACS installation to **0.5.0**, open **HACS →
 Integrations**, select Kitchen Manager, choose **Update** (or download the
 pending update), and restart Home Assistant. Your saved products, stock,
 meals, recurrence rules, and planner selections are retained. The integration
 automatically migrates saved storage-location labels to stable location IDs;
-it does not modify Home Assistant's Recorder database.
+it adds empty product-group metadata without merging existing products and does
+not modify Home Assistant's Recorder database.
 
 ### Manual
 

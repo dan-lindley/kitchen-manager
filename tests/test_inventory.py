@@ -12,6 +12,7 @@ from custom_components.kitchen_manager.inventory import (
     InventoryError,
 )
 from custom_components.kitchen_manager.models import (
+    DataSource,
     KitchenManagerData,
     ModelValidationError,
     TransactionType,
@@ -311,6 +312,238 @@ async def test_legacy_location_labels_are_registered_without_case_duplicates(
     assert len(
         [row for row in engine.list_location_records() if row["name"].casefold() == "pantry"]
     ) == 1
+
+
+async def test_product_groups_can_be_created_renamed_and_deleted_safely(
+    engine: InventoryEngine,
+) -> None:
+    group = await engine.async_create_product_group(name="Lentils")
+    renamed = await engine.async_update_product_group(
+        group_id=group["id"],
+        name="Pulses",
+    )
+    product = await _create_product(
+        engine,
+        name="Sainsbury's Lentils",
+        brand="Sainsbury's",
+        group_id=group["id"],
+    )
+
+    assert renamed["id"] == group["id"]
+    assert renamed["name"] == "Pulses"
+    assert engine.list_products()[0]["product"]["group_name"] == "Pulses"
+    with pytest.raises(InventoryError, match="still contains"):
+        await engine.async_delete_product_group(group["id"])
+
+    await engine.async_update_product(
+        product_id=product["id"],
+        clear_fields=["group"],
+    )
+    await engine.async_delete_product_group(group["id"])
+    assert engine.list_product_groups() == []
+
+
+async def test_product_group_names_are_case_insensitively_unique(
+    engine: InventoryEngine,
+) -> None:
+    await engine.async_create_product_group(name="Baked Beans")
+
+    with pytest.raises(InventoryError, match="already exists"):
+        await engine.async_create_product_group(name="baked beans")
+
+
+async def test_group_totals_only_combine_compatible_package_sizes(
+    engine: InventoryEngine,
+) -> None:
+    group = await engine.async_create_product_group(name="Lentils")
+    products = [
+        await _create_product(
+            engine,
+            name="Sainsbury's Lentils",
+            brand="Sainsbury's",
+            barcode="01167117",
+            package_size=400,
+            package_unit="g",
+            group_id=group["id"],
+        ),
+        await _create_product(
+            engine,
+            name="Freshona Lentils",
+            brand="Freshona",
+            barcode="4056489844693",
+            package_size=400,
+            package_unit="g",
+            group_id=group["id"],
+        ),
+        await _create_product(
+            engine,
+            name="Small Lentils",
+            brand="Small",
+            package_size=200,
+            package_unit="g",
+            group_id=group["id"],
+        ),
+    ]
+    for product, quantity, location in zip(
+        products, [2, 3, 3], ["cupboard", "cupboard", "fridge"], strict=True
+    ):
+        await engine.async_change_stock(
+            TransactionType.ADD,
+            product_id=product["id"],
+            quantity=quantity,
+            location=location,
+        )
+
+    summary = engine.list_product_groups()[0]
+
+    assert summary["variant_count"] == 3
+    assert summary["variant_ids"] == sorted(product["id"] for product in products)
+    assert summary["stock_totals"] == [
+        {
+            "quantity": 3,
+            "unit": "item",
+            "package_size": 200.0,
+            "package_unit": "g",
+        },
+        {
+            "quantity": 5,
+            "unit": "item",
+            "package_size": 400.0,
+            "package_unit": "g",
+        },
+    ]
+    assert set(summary["locations"]) == {"cupboard", "fridge"}
+
+
+async def test_group_totals_update_after_barcode_stock_change_and_lookup_exactly(
+    engine: InventoryEngine,
+) -> None:
+    group = await engine.async_create_product_group(name="Milk")
+    first = await _create_product(
+        engine,
+        name="Whole milk",
+        brand="Farm",
+        barcode="0123",
+        package_size=1,
+        package_unit="L",
+        group_id=group["id"],
+    )
+    await _create_product(
+        engine,
+        name="Oat milk",
+        brand="Oat",
+        barcode="01234",
+        package_size=1,
+        package_unit="L",
+        group_id=group["id"],
+    )
+    assert engine.find_product_by_barcode("0123")["id"] == first["id"]
+    assert engine.find_product_by_barcode("123") is None
+
+    await engine.async_change_stock(
+        TransactionType.ADD,
+        barcode="0123",
+        quantity=2,
+    )
+
+    summary = engine.list_product_groups()[0]
+    assert summary["stock_totals"][0]["quantity"] == 2
+    assert summary["variant_count"] == 2
+    reloaded = InventoryEngine(engine.storage)
+    assert reloaded.list_product_groups()[0]["stock_totals"][0]["quantity"] == 2
+
+
+async def test_unknown_barcode_registration_saves_variant_and_stock_atomically(
+    engine: InventoryEngine,
+) -> None:
+    group = await engine.async_create_product_group(name="Baked Beans")
+    registered = await engine.async_register_barcode_product(
+        name="Baked beans",
+        brand="Freshona",
+        barcode="4012345678901",
+        package_size=400,
+        package_unit="g",
+        group_id=group["id"],
+        quantity=3,
+        data_source=DataSource.OPEN_FOOD_FACTS,
+        operation_id="scan-baked-beans-1",
+    )
+    retry = await engine.async_register_barcode_product(
+        name="Ignored duplicate scan details",
+        barcode="4012345678901",
+        quantity=3,
+        group_id=group["id"],
+        data_source=DataSource.OPEN_FOOD_FACTS,
+        operation_id="scan-baked-beans-1",
+    )
+
+    assert registered["product"]["id"] == retry["product"]["id"]
+    assert registered["product"]["data_source"] == DataSource.OPEN_FOOD_FACTS
+    assert registered["stock"]["quantity"] == 3
+    assert retry["stock"] == registered["stock"]
+    assert len(engine.list_products()) == 1
+    assert len(engine._storage.data.transactions) == 1
+
+
+async def test_registering_a_known_barcode_adds_stock_to_existing_variant(
+    engine: InventoryEngine,
+) -> None:
+    group = await engine.async_create_product_group(name="Milk")
+    product = await _create_product(
+        engine,
+        name="Whole milk",
+        brand="Farm",
+        barcode="012345",
+        package_size=1,
+        package_unit="L",
+        group_id=group["id"],
+        default_storage_location="fridge",
+    )
+
+    result = await engine.async_register_barcode_product(
+        name="Different lookup name",
+        brand="Other brand",
+        barcode="012345",
+        quantity=2,
+    )
+
+    assert result["existing_variant"]
+    assert result["product"]["id"] == product["id"]
+    assert result["product"]["brand"] == "Farm"
+    assert result["stock"]["location"] == "fridge"
+    assert engine.list_product_groups()[0]["stock_totals"][0]["quantity"] == 2
+    assert len(engine.list_products()) == 1
+
+
+async def test_products_can_be_moved_between_groups_or_left_ungrouped(
+    engine: InventoryEngine,
+) -> None:
+    first_group = await engine.async_create_product_group(name="Pasta")
+    second_group = await engine.async_create_product_group(name="Wholegrain pasta")
+    product = await _create_product(
+        engine,
+        name="Spaghetti",
+        group_id=first_group["id"],
+    )
+
+    await engine.async_update_product(
+        product_id=product["id"],
+        group_id=second_group["id"],
+    )
+    moved = next(
+        row for row in engine.list_products() if row["product"]["id"] == product["id"]
+    )
+    assert moved["product"]["group_id"] == second_group["id"]
+
+    await engine.async_update_product(
+        product_id=product["id"],
+        clear_fields=["group"],
+    )
+    ungrouped = next(
+        row for row in engine.list_products() if row["product"]["id"] == product["id"]
+    )
+    assert ungrouped["product"]["group_id"] is None
+    assert ungrouped["product"]["group_name"] is None
 
 
 async def test_add_consume_and_insufficient_stock(engine: InventoryEngine) -> None:

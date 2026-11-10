@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import re
 from typing import Any, NoReturn
+from urllib.parse import quote
 
+from aiohttp import ClientError
 import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_HISTORY_LIMIT, DOMAIN
 from .inventory import InventoryEngine, InventoryError
 from .meals import MealError, MealPlanner
-from .models import ModelValidationError, TransactionType
+from .models import DataSource, ModelValidationError, TransactionType
 
 _CLEARABLE_FIELDS = (
     "brand",
@@ -25,6 +31,7 @@ _CLEARABLE_FIELDS = (
     "package",
     "reorder_threshold",
     "ingredient",
+    "group",
 )
 
 
@@ -77,8 +84,199 @@ async def websocket_catalog(
     locations = _engine(hass).list_location_records()
     connection.send_result(
         msg["id"],
-        {"products": products, "count": len(products), "locations": locations},
+        {
+            "products": products,
+            "count": len(products),
+            "locations": locations,
+            "product_groups": _engine(hass).list_product_groups(),
+        },
     )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/product-group/create",
+        vol.Required("name"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def websocket_create_product_group(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a user-managed product group."""
+    try:
+        group = await _engine(hass).async_create_product_group(name=msg["name"])
+    except (InventoryError, ModelValidationError) as err:
+        _raise_user_error(err)
+    connection.send_result(msg["id"], {"group": group})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/product-group/update",
+        vol.Required("group_id"): cv.string,
+        vol.Required("name"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def websocket_update_product_group(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Rename a group without changing product membership."""
+    try:
+        group = await _engine(hass).async_update_product_group(
+            group_id=msg["group_id"], name=msg["name"]
+        )
+    except (InventoryError, ModelValidationError) as err:
+        _raise_user_error(err)
+    connection.send_result(msg["id"], {"group": group})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/product-group/delete",
+        vol.Required("group_id"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def websocket_delete_product_group(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete an empty product group."""
+    try:
+        await _engine(hass).async_delete_product_group(msg["group_id"])
+    except (InventoryError, ModelValidationError) as err:
+        _raise_user_error(err)
+    connection.send_result(msg["id"], {"success": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/barcode/lookup",
+        vol.Required("barcode"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def websocket_lookup_barcode(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Match a local variant first, then optionally look it up on Open Food Facts."""
+    engine = _engine(hass)
+    barcode = msg["barcode"].strip()
+    try:
+        product = engine.find_product_by_barcode(barcode)
+    except InventoryError as err:
+        _raise_user_error(err)
+    if product is not None:
+        connection.send_result(
+            msg["id"], {"matched": True, "product": product, "source": "local"}
+        )
+        return
+
+    session = async_get_clientsession(hass)
+    try:
+        async with session.get(
+            f"https://world.openfoodfacts.org/api/v2/product/{quote(barcode, safe='')}.json",
+            params={"fields": "product_name,brands,quantity,code"},
+            timeout=10,
+        ) as response:
+            if response.status >= 400:
+                raise ServiceValidationError(
+                    "Open Food Facts lookup failed "
+                    f"(HTTP {response.status}); enter the product details manually."
+                )
+            payload = await response.json(content_type=None)
+    except (
+        ClientError,
+        asyncio.TimeoutError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+    ) as err:
+        raise ServiceValidationError(
+            "Open Food Facts could not be reached or returned invalid data; "
+            "enter the product details manually."
+        ) from err
+    if not isinstance(payload, dict) or payload.get("status") not in (0, 1):
+        raise ServiceValidationError(
+            "Open Food Facts returned an invalid response; "
+            "enter the product details manually."
+        )
+    source_product = payload.get("product") if payload.get("status") == 1 else None
+    name = source_product.get("product_name") if isinstance(source_product, dict) else None
+    if not isinstance(name, str) or not name.strip():
+        connection.send_result(
+            msg["id"], {"matched": False, "barcode": barcode, "product": None}
+        )
+        return
+
+    product_details: dict[str, Any] = {
+        "name": name.strip()[:200],
+        "barcode": barcode,
+        "data_source": DataSource.OPEN_FOOD_FACTS.value,
+    }
+    brand = source_product.get("brands")
+    if isinstance(brand, str) and brand.strip():
+        product_details["brand"] = brand.split(",")[0].strip()[:200]
+    quantity = source_product.get("quantity")
+    if isinstance(quantity, str):
+        size_match = re.fullmatch(
+            r"\s*(\d+(?:[.,]\d+)?)\s*(g|kg|ml|l|cl)\s*",
+            quantity,
+            flags=re.IGNORECASE,
+        )
+        if size_match:
+            product_details["package_size"] = float(
+                size_match.group(1).replace(",", ".")
+            )
+            product_details["package_unit"] = size_match.group(2).lower()
+    connection.send_result(
+        msg["id"],
+        {"matched": False, "barcode": barcode, "product": product_details},
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/barcode/register",
+        vol.Required("name"): cv.string,
+        vol.Required("barcode"): cv.string,
+        vol.Required("quantity"): vol.Any(int, float),
+        vol.Optional("brand"): cv.string,
+        vol.Optional("package_size"): vol.Any(int, float),
+        vol.Optional("package_unit"): cv.string,
+        vol.Optional("group_id"): cv.string,
+        vol.Optional("default_storage_location"): cv.string,
+        vol.Optional("data_source"): vol.In(
+            [source.value for source in DataSource]
+        ),
+        vol.Optional("operation_id"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def websocket_register_barcode_product(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Create a scanned variant and add its stock in one persistent operation."""
+    fields = {
+        key: value
+        for key, value in msg.items()
+        if key not in {"id", "type"}
+    }
+    try:
+        result = await _engine(hass).async_register_barcode_product(**fields)
+    except (InventoryError, ModelValidationError) as err:
+        _raise_user_error(err)
+    connection.send_result(msg["id"], result)
 
 
 @websocket_api.websocket_command(
@@ -93,6 +291,10 @@ async def websocket_catalog(
         vol.Optional("ingredient_name"): cv.string,
         vol.Optional("reorder_threshold"): vol.Any(int, float),
         vol.Optional("default_storage_location"): cv.string,
+        vol.Optional("group_id"): cv.string,
+        vol.Optional("data_source"): vol.In(
+            [source.value for source in DataSource]
+        ),
     }
 )
 @websocket_api.async_response
@@ -190,6 +392,7 @@ async def websocket_delete_location(
         vol.Optional("ingredient_name"): cv.string,
         vol.Optional("reorder_threshold"): vol.Any(int, float),
         vol.Optional("default_storage_location"): cv.string,
+        vol.Optional("group_id"): cv.string,
         vol.Optional("clear_fields"): vol.All(
             cv.ensure_list, [vol.In(_CLEARABLE_FIELDS)]
         ),
@@ -429,6 +632,11 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
     """Register authenticated panel commands once per Home Assistant instance."""
     for handler in (
         websocket_catalog,
+        websocket_create_product_group,
+        websocket_update_product_group,
+        websocket_delete_product_group,
+        websocket_lookup_barcode,
+        websocket_register_barcode_product,
         websocket_create_product,
         websocket_update_product,
         websocket_create_location,

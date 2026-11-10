@@ -121,6 +121,34 @@ async def test_meal_ingredient_must_reference_a_catalogue_product(
         )
 
 
+async def test_group_assignment_does_not_change_exact_recipe_product_reference(
+    planner: MealPlanner,
+    storage: MemoryStorage,
+) -> None:
+    inventory = InventoryEngine(storage)
+    group = await inventory.async_create_product_group(name="Beans")
+    product = await inventory.async_create_product(
+        name="Baked beans",
+        brand="Brand A",
+    )
+    meal = await planner.async_save_meal(
+        name="Beans on toast",
+        effort="low",
+        time_minutes=10,
+        ingredients=[{"product_id": product["id"], "quantity": 1, "unit": "tin"}],
+        today=MONDAY,
+    )
+
+    await inventory.async_update_product(
+        product_id=product["id"],
+        group_id=group["id"],
+    )
+
+    saved_meal = planner.list_meals()[0]
+    assert meal["ingredients"][0]["product_id"] == product["id"]
+    assert saved_meal["ingredients"][0]["product_id"] == product["id"]
+
+
 async def test_edit_preserves_meal_identity_and_updates_recurrence(
     planner: MealPlanner,
 ) -> None:
@@ -439,6 +467,7 @@ def test_schema_v4_migrates_without_changing_inventory() -> None:
     old.pop("recurrences")
     old.pop("planner")
     old.pop("locations")
+    old.pop("product_groups")
 
     migrated = KitchenManagerData.from_dict(old)
 
@@ -449,7 +478,7 @@ def test_schema_v4_migrates_without_changing_inventory() -> None:
     assert migrated.inventory[
         KitchenManagerData.inventory_key(product.id, stock.location)
     ].quantity == 3
-    assert migrated.to_dict()["schema_version"] == 6
+    assert migrated.to_dict()["schema_version"] == 7
 
 
 def test_meal_weekdays_and_planner_dates_are_validated() -> None:

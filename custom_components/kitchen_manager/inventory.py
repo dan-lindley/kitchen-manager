@@ -18,6 +18,7 @@ from .models import (
     ModelValidationError,
     OperationRecord,
     Product,
+    ProductGroupRecord,
     StorageLocationRecord,
     StorageLocation,
     StockTransaction,
@@ -116,6 +117,18 @@ def _location_identifier(name: str, locations: dict[str, StorageLocationRecord])
     return identifier
 
 
+def _group_identifier(name: str, groups: dict[str, ProductGroupRecord]) -> str:
+    """Create a stable readable identifier for a new product group."""
+    identifier = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-") or "group"
+    identifier = identifier[:48]
+    base = identifier
+    suffix = 2
+    while identifier in groups:
+        identifier = f"{base[:48]}-{suffix}"
+        suffix += 1
+    return identifier
+
+
 class InventoryEngine:
     """Apply atomic catalogue and inventory operations to the persistent store."""
 
@@ -140,6 +153,8 @@ class InventoryEngine:
         ingredient_name: str | None = None,
         reorder_threshold: float | None = None,
         default_storage_location: str = "cupboard",
+        group_id: str | None = None,
+        data_source: DataSource = DataSource.MANUAL,
     ) -> dict[str, Any]:
         """Create a product and reuse or create its generic ingredient."""
         product = Product(
@@ -152,7 +167,8 @@ class InventoryEngine:
             package_unit=package_unit,
             reorder_threshold=reorder_threshold,
             default_storage_location=_location(default_storage_location),
-            data_source=DataSource.MANUAL,
+            group_id=group_id,
+            data_source=data_source,
         )
         if ingredient_name is not None:
             Ingredient(id="pending", name=ingredient_name)
@@ -164,6 +180,8 @@ class InventoryEngine:
                 raise InventoryError(f"Barcode {product.barcode} is already assigned")
             for existing in data.products.values():
                 if (
+                    (not product.barcode or not existing.barcode)
+                    and
                     existing.name.casefold() == product.name.casefold()
                     and (existing.brand or "").casefold()
                     == (product.brand or "").casefold()
@@ -198,6 +216,8 @@ class InventoryEngine:
             product.default_storage_location = _resolve_or_create_location(
                 data, str(product.default_storage_location)
             )
+            if product.group_id is not None and product.group_id not in data.product_groups:
+                raise InventoryError(f"Unknown product group: {product.group_id}")
             data.products[product.id] = product
             return _product_dict(product), True
 
@@ -216,6 +236,7 @@ class InventoryEngine:
         ingredient_name: str | None = None,
         reorder_threshold: float | None = None,
         default_storage_location: str | None = None,
+        group_id: str | None = None,
         clear_fields: list[str] | None = None,
     ) -> dict[str, Any]:
         """Update product details without changing its inventory or history."""
@@ -231,6 +252,7 @@ class InventoryEngine:
                 ingredient_name,
                 reorder_threshold,
                 default_storage_location,
+                group_id,
             )
         ) and not clear_fields:
             raise InventoryError("At least one product field must be provided")
@@ -241,6 +263,7 @@ class InventoryEngine:
             "package",
             "reorder_threshold",
             "ingredient",
+            "group",
         }
         clear_fields = clear_fields or []
         if (
@@ -260,6 +283,7 @@ class InventoryEngine:
             "reorder_threshold": reorder_threshold,
             "ingredient": ingredient_name,
             "default_storage_location": default_storage_location,
+            "group": group_id,
         }
         if any(conflicting_fields[field] for field in clear_fields):
             raise InventoryError("Do not provide a value for a field being cleared")
@@ -296,10 +320,16 @@ class InventoryEngine:
                 updated.default_storage_location = _resolve_or_create_location(
                     data, default_storage_location
                 )
+            if group_id is not None:
+                if group_id not in data.product_groups:
+                    raise InventoryError(f"Unknown product group: {group_id}")
+                updated.group_id = group_id
             if "reorder_threshold" in clear_fields:
                 updated.reorder_threshold = None
             if "ingredient" in clear_fields:
                 updated.ingredient_id = None
+            if "group" in clear_fields:
+                updated.group_id = None
             if ingredient_name is not None:
                 Ingredient(id="pending", name=ingredient_name)
                 normalized = ingredient_name.casefold()
@@ -328,6 +358,8 @@ class InventoryEngine:
                 raise InventoryError(f"Barcode {updated.barcode} is already assigned")
             if any(
                 item.id != updated.id
+                and not updated.barcode
+                and not item.barcode
                 and item.name.casefold() == updated.name.casefold()
                 and (item.brand or "").casefold() == (updated.brand or "").casefold()
                 and item.package_size == updated.package_size
@@ -341,6 +373,155 @@ class InventoryEngine:
             Product.from_dict(updated.to_dict())
             data.products[product_id] = updated
             return _product_dict(updated), True
+
+        return await self._storage.async_update(mutate)
+
+    async def async_register_barcode_product(
+        self,
+        *,
+        name: str,
+        barcode: str,
+        quantity: float,
+        brand: str | None = None,
+        package_size: float | None = None,
+        package_unit: str | None = None,
+        group_id: str | None = None,
+        default_storage_location: str = "cupboard",
+        data_source: DataSource = DataSource.MANUAL,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a scanned variant and add stock atomically, or add to its exact match."""
+        barcode = barcode.strip() if isinstance(barcode, str) else barcode
+        if not barcode:
+            raise InventoryError("Barcode must not be empty.")
+        quantity = _quantity(quantity, "quantity")
+        requested_location = _location(default_storage_location)
+        if operation_id is not None and not operation_id.strip():
+            raise InventoryError("operation_id must not be empty")
+
+        def mutate(data: KitchenManagerData) -> tuple[dict[str, Any], bool]:
+            selected_location = _resolve_or_create_location(
+                data, str(requested_location)
+            )
+            fingerprint = self._fingerprint(
+                TransactionType.ADD, None, barcode, quantity, selected_location
+            )
+            if operation_id is not None and operation_id in data.operations:
+                previous = data.operations[operation_id]
+                if previous.fingerprint != fingerprint:
+                    raise InventoryError(
+                        f"operation_id {operation_id} was already used for a different request"
+                    )
+                previous_product = data.products.get(
+                    previous.result["product_id"]
+                )
+                if previous_product is None:
+                    raise InventoryError(
+                        "The product from this barcode scan no longer exists."
+                    )
+                return {
+                    "product": _product_dict(previous_product),
+                    "stock": previous.result,
+                    "existing_variant": True,
+                }, False
+
+            product = next(
+                (
+                    item
+                    for item in data.products.values()
+                    if item.barcode == barcode
+                ),
+                None,
+            )
+            created = product is None
+            if product is None:
+                product = Product(
+                    id=uuid4().hex,
+                    name=name,
+                    brand=brand,
+                    barcode=barcode,
+                    package_size=package_size,
+                    package_unit=package_unit,
+                    group_id=group_id,
+                    default_storage_location=selected_location,
+                    data_source=data_source,
+                )
+                if group_id is not None and group_id not in data.product_groups:
+                    raise InventoryError(f"Unknown product group: {group_id}")
+                if any(
+                    not product.barcode
+                    and not item.barcode
+                    and item.name.casefold() == product.name.casefold()
+                    and (item.brand or "").casefold() == (product.brand or "").casefold()
+                    and item.package_size == product.package_size
+                    and (item.package_unit or "").casefold()
+                    == (product.package_unit or "").casefold()
+                    for item in data.products.values()
+                ):
+                    raise InventoryError("A matching product already exists")
+                data.products[product.id] = product
+            else:
+                if default_storage_location != "cupboard":
+                    selected_location = _resolve_or_create_location(
+                        data, str(requested_location)
+                    )
+                else:
+                    selected_location = str(product.default_storage_location)
+
+            key = data.inventory_key(product.id, selected_location)
+            item = data.inventory.get(key)
+            previous_quantity = item.quantity if item is not None else 0.0
+            new_quantity = previous_quantity + quantity
+            if not math.isfinite(new_quantity):
+                raise InventoryError("Resulting stock quantity is not finite")
+            timestamp = datetime.now(UTC).isoformat()
+            if item is None:
+                item = InventoryItem(
+                    product_id=product.id,
+                    quantity=new_quantity,
+                    unit="item",
+                    location=selected_location,
+                    verification_status=VerificationStatus.VERIFIED,
+                    updated_at=timestamp,
+                )
+                data.inventory[key] = item
+            else:
+                item.quantity = new_quantity
+                item.updated_at = timestamp
+                item.verification_status = VerificationStatus.VERIFIED
+            transaction = StockTransaction(
+                id=uuid4().hex,
+                product_id=product.id,
+                operation=TransactionType.ADD,
+                quantity_changed=quantity,
+                previous_quantity=previous_quantity,
+                new_quantity=new_quantity,
+                location=selected_location,
+                timestamp=timestamp,
+                operation_id=operation_id,
+            )
+            data.transactions.append(transaction)
+            result = {
+                "product": _product_dict(product),
+                "stock": {
+                    "product_id": product.id,
+                    "product_name": product.name,
+                    "quantity": new_quantity,
+                    "unit": item.unit,
+                    "location": str(selected_location),
+                    "location_id": selected_location,
+                    "transaction_id": transaction.id,
+                    "operation_id": operation_id,
+                },
+                "existing_variant": not created,
+            }
+            if operation_id is not None:
+                data.operations[operation_id] = OperationRecord(
+                    operation_id=operation_id,
+                    fingerprint=fingerprint,
+                    result=result["stock"],
+                )
+            return result, True
 
         return await self._storage.async_update(mutate)
 
@@ -403,6 +584,11 @@ class InventoryEngine:
                         "default_storage_location_name": data.locations[
                             str(product.default_storage_location)
                         ].name,
+                        "group_name": (
+                            data.product_groups[product.group_id].name
+                            if product.group_id is not None
+                            else None
+                        ),
                     },
                     "ingredient_name": (
                         data.ingredients[product.ingredient_id].name
@@ -417,6 +603,149 @@ class InventoryEngine:
                 }
             )
         return results
+
+    def list_product_groups(self) -> list[dict[str, Any]]:
+        """Return groups with package-compatible totals and variant IDs."""
+        data = self._storage.data
+        results = []
+        for group in sorted(
+            data.product_groups.values(), key=lambda item: item.name.casefold()
+        ):
+            products = [
+                product
+                for product in data.products.values()
+                if product.group_id == group.id
+            ]
+            totals: dict[tuple[str, float | None, str | None], float] = {}
+            stock_locations: set[str] = set()
+            default_locations: set[str] = set()
+            low_stock = False
+            for product in products:
+                default_locations.add(str(product.default_storage_location))
+                product_stock = [
+                    item
+                    for item in data.inventory.values()
+                    if item.product_id == product.id and item.quantity > 0
+                ]
+                for item in product_stock:
+                    stock_locations.add(str(item.location))
+                    key = (
+                        item.unit.casefold(),
+                        product.package_size,
+                        product.package_unit.casefold()
+                        if product.package_unit is not None
+                        else None,
+                    )
+                    totals[key] = totals.get(key, 0) + item.quantity
+                if product.reorder_threshold is not None and sum(
+                    item.quantity
+                    for item in data.inventory.values()
+                    if item.product_id == product.id
+                ) < product.reorder_threshold:
+                    low_stock = True
+            locations = stock_locations or default_locations
+            results.append(
+                {
+                    **group.to_dict(),
+                    "variant_ids": sorted(product.id for product in products),
+                    "variant_count": len(products),
+                    "low_stock": low_stock,
+                    "locations": sorted(locations),
+                    "stock_totals": [
+                        {
+                            "quantity": quantity,
+                            "unit": unit,
+                            "package_size": package_size,
+                            "package_unit": package_unit,
+                        }
+                        for (unit, package_size, package_unit), quantity in sorted(
+                            totals.items(),
+                            key=lambda item: (
+                                item[0][1] is None,
+                                item[0][1] or 0,
+                                item[0][2] or "",
+                                item[0][0],
+                            ),
+                        )
+                    ],
+                }
+            )
+        return results
+
+    async def async_create_product_group(self, *, name: str) -> dict[str, Any]:
+        """Create a named product group, rejecting case-insensitive duplicates."""
+        if not isinstance(name, str) or not name.strip() or name != name.strip():
+            raise InventoryError("Enter a non-empty trimmed group name.")
+        if len(name) > 100:
+            raise InventoryError("Group names must be at most 100 characters.")
+
+        def mutate(data: KitchenManagerData) -> tuple[dict[str, Any], bool]:
+            if any(
+                group.name.casefold() == name.casefold()
+                for group in data.product_groups.values()
+            ):
+                raise InventoryError(f"A product group named {name} already exists.")
+            group_id = _group_identifier(name, data.product_groups)
+            group = ProductGroupRecord(id=group_id, name=name)
+            data.product_groups[group.id] = group
+            return group.to_dict(), True
+
+        return await self._storage.async_update(mutate)
+
+    async def async_update_product_group(
+        self, *, group_id: str, name: str
+    ) -> dict[str, Any]:
+        """Rename a group without changing product membership."""
+        if not isinstance(name, str) or not name.strip() or name != name.strip():
+            raise InventoryError("Enter a non-empty trimmed group name.")
+        if len(name) > 100:
+            raise InventoryError("Group names must be at most 100 characters.")
+
+        def mutate(data: KitchenManagerData) -> tuple[dict[str, Any], bool]:
+            group = data.product_groups.get(group_id)
+            if group is None:
+                raise InventoryError(f"Unknown product group: {group_id}")
+            if any(
+                item.id != group_id and item.name.casefold() == name.casefold()
+                for item in data.product_groups.values()
+            ):
+                raise InventoryError(f"A product group named {name} already exists.")
+            if group.name == name:
+                return group.to_dict(), False
+            group.name = name
+            group.updated_at = datetime.now(UTC).isoformat()
+            return group.to_dict(), True
+
+        return await self._storage.async_update(mutate)
+
+    async def async_delete_product_group(self, group_id: str) -> None:
+        """Delete a group only after all of its products have been unassigned."""
+
+        def mutate(data: KitchenManagerData) -> tuple[None, bool]:
+            if group_id not in data.product_groups:
+                raise InventoryError(f"Unknown product group: {group_id}")
+            if any(product.group_id == group_id for product in data.products.values()):
+                raise InventoryError(
+                    "This group still contains products. Move or ungroup its variants first."
+                )
+            del data.product_groups[group_id]
+            return None, True
+
+        await self._storage.async_update(mutate)
+
+    def find_product_by_barcode(self, barcode: str) -> dict[str, Any] | None:
+        """Return one exact barcode match, never a partial catalogue result."""
+        if not isinstance(barcode, str) or not barcode.strip():
+            raise InventoryError("Barcode must not be empty.")
+        match = next(
+            (
+                product
+                for product in self._storage.data.products.values()
+                if product.barcode == barcode.strip()
+            ),
+            None,
+        )
+        return _product_dict(match) if match is not None else None
 
     def list_locations(self) -> list[str]:
         """Return configured location names for legacy callers."""

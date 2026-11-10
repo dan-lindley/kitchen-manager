@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0
+
+- Added optional persistent product groups while retaining separate product
+  variants, barcodes, stock, transaction history, and exact recipe references.
+- Added expandable grouped inventory rows with package-compatible totals,
+  variant details, managed group creation/renaming, and group selection when
+  editing or registering products.
+- Added exact local barcode matching and atomic product registration plus
+  initial stock addition; Open Food Facts lookup failures now leave a clear
+  manual registration path.
+- Added a schema v6-to-v7 migration that leaves existing products ungrouped.
+
 ## 0.4.0
 
 - Replaced the inventory cards with a searchable, sortable, filterable table

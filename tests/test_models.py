@@ -158,6 +158,7 @@ def test_v1_data_migrates_and_preserves_saved_location() -> None:
                     "description",
                     "reorder_threshold",
                     "default_storage_location",
+                    "group_id",
                 }
             }
         },
@@ -173,7 +174,7 @@ def test_v1_data_migrates_and_preserves_saved_location() -> None:
         KitchenManagerData.inventory_key(product.id, StorageLocation.FRIDGE)
     ].location) == StorageLocation.FRIDGE.value
     assert migrated.transactions == []
-    assert migrated.to_dict()["schema_version"] == 6
+    assert migrated.to_dict()["schema_version"] == 7
     assert str(migrated.products[product.id].default_storage_location) == "fridge"
 
 
@@ -187,6 +188,7 @@ def test_v2_data_migrates_with_optional_product_metadata() -> None:
     product_data.pop("description")
     product_data.pop("reorder_threshold")
     product_data.pop("default_storage_location")
+    product_data.pop("group_id")
     v2_data = {
         "schema_version": 2,
         "ingredients": {},
@@ -208,7 +210,7 @@ def test_v2_data_migrates_with_optional_product_metadata() -> None:
     assert migrated.inventory[
         KitchenManagerData.inventory_key(product.id, item.location)
     ].quantity == 2
-    assert migrated.to_dict()["schema_version"] == 6
+    assert migrated.to_dict()["schema_version"] == 7
     assert str(migrated.products[product.id].default_storage_location) == "fridge"
 
 
@@ -243,6 +245,7 @@ def test_v3_migration_infers_largest_stock_location_without_changing_records() -
     ]
     product_data = product.to_dict()
     product_data.pop("default_storage_location")
+    product_data.pop("group_id")
     v3_data = {
         "schema_version": 3,
         "ingredients": {},
@@ -272,7 +275,7 @@ def test_v3_migration_infers_largest_stock_location_without_changing_records() -
         "fridge-stock",
         "pantry-stock",
     }
-    assert migrated.to_dict()["schema_version"] == 6
+    assert migrated.to_dict()["schema_version"] == 7
 
 
 def test_v5_migration_converts_case_variants_to_one_stable_location() -> None:
@@ -308,6 +311,7 @@ def test_v5_migration_converts_case_variants_to_one_stable_location() -> None:
     old = data.to_dict()
     old["schema_version"] = 5
     old.pop("locations")
+    old.pop("product_groups")
     old["products"][product.id]["default_storage_location"] = "Pantry"
     inventory_item = old["inventory"].pop(
         KitchenManagerData.inventory_key(product.id, "pantry")
@@ -324,7 +328,54 @@ def test_v5_migration_converts_case_variants_to_one_stable_location() -> None:
         KitchenManagerData.inventory_key(product.id, "pantry")
     ].quantity == 2
     assert migrated.transactions[0].new_quantity == 2
-    assert migrated.to_dict()["schema_version"] == 6
+    assert migrated.to_dict()["schema_version"] == 7
+
+
+def test_v6_migration_preserves_variants_and_adds_empty_groups() -> None:
+    product = Product(
+        id="lentils-sainsbury",
+        name="Lentils",
+        brand="Sainsbury's",
+        barcode="01167117",
+        package_size=400,
+        package_unit="g",
+    )
+    stock = InventoryItem(
+        product_id=product.id,
+        quantity=2,
+        unit="item",
+        location="cupboard",
+    )
+    transaction = StockTransaction(
+        id="lentils-add",
+        product_id=product.id,
+        operation=TransactionType.ADD,
+        quantity_changed=2,
+        previous_quantity=0,
+        new_quantity=2,
+        location="cupboard",
+    )
+    data = KitchenManagerData(
+        products={product.id: product},
+        inventory={KitchenManagerData.inventory_key(product.id, stock.location): stock},
+        transactions=[transaction],
+    )
+    old = data.to_dict()
+    old["schema_version"] = 6
+    old.pop("product_groups")
+    old["products"][product.id].pop("group_id")
+
+    migrated = KitchenManagerData.from_dict(old)
+
+    assert migrated.product_groups == {}
+    assert migrated.products[product.id].id == product.id
+    assert migrated.products[product.id].barcode == "01167117"
+    assert migrated.products[product.id].package_size == 400
+    assert migrated.inventory[
+        KitchenManagerData.inventory_key(product.id, "cupboard")
+    ].quantity == 2
+    assert [item.id for item in migrated.transactions] == ["lentils-add"]
+    assert migrated.to_dict()["schema_version"] == 7
 
 
 def test_product_supports_custom_storage_location() -> None:

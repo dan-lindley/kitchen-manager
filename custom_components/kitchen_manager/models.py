@@ -67,6 +67,35 @@ class StorageLocationRecord:
             raise ModelValidationError("location has an invalid shape") from err
 
 
+@dataclass(slots=True)
+class ProductGroupRecord:
+    """A user-managed inventory presentation group for product variants."""
+
+    id: str
+    name: str
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+    def __post_init__(self) -> None:
+        self.id = _validate_text(self.id, "product_group.id", maximum=64)
+        self.name = _validate_text(self.name, "product_group.name", maximum=100)
+        self.created_at = _validate_timestamp(self.created_at, "product_group.created_at")
+        self.updated_at = _validate_timestamp(self.updated_at, "product_group.updated_at")
+        _validate_timestamp_order(self.created_at, self.updated_at, "product_group")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Any) -> ProductGroupRecord:
+        if not isinstance(value, dict):
+            raise ModelValidationError("product group must be an object")
+        try:
+            return cls(**value)
+        except TypeError as err:
+            raise ModelValidationError("product group has an invalid shape") from err
+
+
 def _default_locations() -> dict[str, StorageLocationRecord]:
     return {
         location.value: StorageLocationRecord(location.value, location.value.title())
@@ -246,6 +275,7 @@ class Product:
     ingredient_id: str | None = None
     reorder_threshold: float | None = None
     default_storage_location: StorageLocation | str = StorageLocation.CUPBOARD
+    group_id: str | None = None
     data_source: DataSource = DataSource.MANUAL
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
@@ -261,6 +291,7 @@ class Product:
         self.ingredient_id = _validate_optional_text(
             self.ingredient_id, "product.ingredient_id"
         )
+        self.group_id = _validate_optional_text(self.group_id, "product.group_id")
         self.data_source = _validate_enum(
             DataSource, self.data_source, "product.data_source"
         )
@@ -680,6 +711,7 @@ class KitchenManagerData:
     recurrences: dict[str, RecurrenceRule] = field(default_factory=dict)
     planner: dict[str, PlannerEntry] = field(default_factory=dict)
     locations: dict[str, StorageLocationRecord] = field(default_factory=_default_locations)
+    product_groups: dict[str, ProductGroupRecord] = field(default_factory=dict)
 
     @staticmethod
     def inventory_key(product_id: str, location: StorageLocation | str) -> str:
@@ -688,7 +720,13 @@ class KitchenManagerData:
 
     def validate(self) -> None:
         """Validate record keys, references, and unique barcodes."""
-        for collection_name in ("ingredients", "products", "inventory", "locations"):
+        for collection_name in (
+            "ingredients",
+            "products",
+            "inventory",
+            "locations",
+            "product_groups",
+        ):
             collection = getattr(self, collection_name)
             if not isinstance(collection, dict):
                 raise ModelValidationError(f"{collection_name} must be an object")
@@ -709,6 +747,10 @@ class KitchenManagerData:
                 raise ModelValidationError(
                     f"product {product.id} references an unknown ingredient"
                 )
+            if product.group_id is not None and product.group_id not in self.product_groups:
+                raise ModelValidationError(
+                    f"product {product.id} references an unknown product group"
+                )
             if self.locations and str(product.default_storage_location) not in self.locations:
                 raise ModelValidationError(
                     f"product {product.id} references an unknown storage location"
@@ -724,6 +766,17 @@ class KitchenManagerData:
             if normalized_name in location_names:
                 raise ModelValidationError("storage location names must be unique")
             location_names.add(normalized_name)
+        group_names: set[str] = set()
+        for key, group in self.product_groups.items():
+            if not isinstance(key, str) or not isinstance(group, ProductGroupRecord):
+                raise ModelValidationError("product_groups contains an invalid record")
+            ProductGroupRecord.from_dict(group.to_dict())
+            if key != group.id:
+                raise ModelValidationError("product group key does not match its id")
+            normalized_name = group.name.casefold()
+            if normalized_name in group_names:
+                raise ModelValidationError("product group names must be unique")
+            group_names.add(normalized_name)
         barcodes = [
             product.barcode
             for product in self.products.values()
@@ -886,6 +939,9 @@ class KitchenManagerData:
             "locations": {
                 key: item.to_dict() for key, item in self.locations.items()
             },
+            "product_groups": {
+                key: item.to_dict() for key, item in self.product_groups.items()
+            },
         }
 
     @classmethod
@@ -904,6 +960,8 @@ class KitchenManagerData:
             return cls._migrate_v4_data(value)
         if version == 5:
             return cls._migrate_v5_data(value)
+        if version == 6:
+            return cls._migrate_v6_data(value)
         if version != DATA_SCHEMA_VERSION:
             raise ModelValidationError(
                 f"unsupported Kitchen Manager data version: {version}"
@@ -919,6 +977,7 @@ class KitchenManagerData:
             "recurrences",
             "planner",
             "locations",
+            "product_groups",
         }
         if set(value) != expected_keys:
             raise ModelValidationError("Kitchen Manager data has an invalid shape")
@@ -933,6 +992,7 @@ class KitchenManagerData:
             "recurrences",
             "planner",
             "locations",
+            "product_groups",
         ):
             collection = value.get(name)
             if not isinstance(collection, dict):
@@ -979,6 +1039,10 @@ class KitchenManagerData:
             locations={
                 key: StorageLocationRecord.from_dict(item)
                 for key, item in records["locations"].items()
+            },
+            product_groups={
+                key: ProductGroupRecord.from_dict(item)
+                for key, item in records["product_groups"].items()
             },
         )
         data.validate()
@@ -1215,6 +1279,67 @@ class KitchenManagerData:
             },
         )
         cls._migrate_legacy_locations(data)
+        data.validate()
+        return data
+
+    @classmethod
+    def _migrate_v6_data(cls, value: dict[str, Any]) -> KitchenManagerData:
+        """Add empty product groups without changing existing product records."""
+        expected_keys = {
+            "schema_version",
+            "ingredients",
+            "products",
+            "inventory",
+            "transactions",
+            "operations",
+            "meals",
+            "recurrences",
+            "planner",
+            "locations",
+        }
+        if not isinstance(value, dict) or set(value) != expected_keys:
+            raise ModelValidationError("version 6 data has an invalid shape")
+        for name in expected_keys - {"schema_version", "transactions"}:
+            if not isinstance(value[name], dict):
+                raise ModelValidationError(f"{name} must be an object")
+        if not isinstance(value["transactions"], list):
+            raise ModelValidationError("transactions must be a list")
+        data = cls(
+            ingredients={
+                key: Ingredient.from_dict(item)
+                for key, item in value["ingredients"].items()
+            },
+            products={
+                key: Product.from_dict(item)
+                for key, item in value["products"].items()
+            },
+            inventory={
+                key: InventoryItem.from_dict(item)
+                for key, item in value["inventory"].items()
+            },
+            transactions=[
+                StockTransaction.from_dict(item) for item in value["transactions"]
+            ],
+            operations={
+                key: OperationRecord.from_dict(item)
+                for key, item in value["operations"].items()
+            },
+            meals={
+                key: Meal.from_dict(item) for key, item in value["meals"].items()
+            },
+            recurrences={
+                key: RecurrenceRule.from_dict(item)
+                for key, item in value["recurrences"].items()
+            },
+            planner={
+                key: PlannerEntry.from_dict(item)
+                for key, item in value["planner"].items()
+            },
+            locations={
+                key: StorageLocationRecord.from_dict(item)
+                for key, item in value["locations"].items()
+            },
+        )
         data.validate()
         return data
 

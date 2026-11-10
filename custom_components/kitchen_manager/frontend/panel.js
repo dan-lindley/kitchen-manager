@@ -4,6 +4,7 @@ class KitchenManagerPanel extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._hass = undefined;
     this._products = [];
+    this._groups = [];
     this._mealProducts = [];
     this._history = [];
     this._meals = [];
@@ -25,6 +26,7 @@ class KitchenManagerPanel extends HTMLElement {
     this._pickerSaving = false;
     this._returnToPicker = false;
     this._inventoryPage = 1;
+    this._expandedGroups = new Set();
     this._inventorySort = { key: "name", direction: "asc" };
     this._locationFilter = "any";
     this._lowStockFilter = "any";
@@ -53,6 +55,7 @@ class KitchenManagerPanel extends HTMLElement {
     try {
       const catalog = await this._request("catalog");
       this._locations = catalog.locations || this._locations;
+      this._groups = catalog.product_groups || this._groups;
     } catch (error) {
       this._error = error.message || "Storage locations could not be loaded.";
     } finally {
@@ -87,10 +90,11 @@ class KitchenManagerPanel extends HTMLElement {
     this._render();
     try {
       const [catalog, history] = await Promise.all([
-        this._request("catalog", search ? { search_term: search } : {}),
+        this._request("catalog"),
         this._request("history", { limit: 30 }),
       ]);
       this._products = catalog.products;
+      this._groups = catalog.product_groups || this._groups;
       this._history = history.transactions;
       this._locations = catalog.locations || this._locations;
     } catch (error) {
@@ -114,6 +118,7 @@ class KitchenManagerPanel extends HTMLElement {
       this._meals = mealResult.meals;
       this._planner = planner;
       this._mealProducts = catalog.products;
+      this._groups = catalog.product_groups || this._groups;
     } catch (error) {
       this._error = error.message || "Meals could not be loaded.";
     } finally {
@@ -143,6 +148,7 @@ class KitchenManagerPanel extends HTMLElement {
       const catalog = await this._request("catalog");
       this._products = catalog.products;
       this._locations = catalog.locations || this._locations;
+      this._groups = catalog.product_groups || this._groups;
     } catch (error) {
       this._error = error.message || "Shopping suggestions could not be loaded.";
     } finally {
@@ -164,7 +170,7 @@ class KitchenManagerPanel extends HTMLElement {
       kitchen: ["My Kitchen", "Products, stock and recent changes"],
       meals: ["Meals", "Your recipe collection and four-week planner"],
       shopping: ["Shopping", "Suggested purchases from your reorder thresholds"],
-      settings: ["Settings", "Manage storage locations"],
+      settings: ["Settings", "Manage storage locations and product groups"],
     }[this._view];
     let content = "";
     if (this._view === "kitchen") {
@@ -353,6 +359,12 @@ class KitchenManagerPanel extends HTMLElement {
         .inventory-table tr:last-child td { border-bottom: 0; }
         .inventory-table tbody tr { cursor: pointer; transition: background 120ms ease; }
         .inventory-table tbody tr:hover, .inventory-table tbody tr:focus-visible { background: var(--secondary-background-color); outline: 2px solid var(--primary-color); outline-offset: -2px; }
+        .inventory-table tbody .group-row { background: var(--secondary-background-color); font-weight: 650; }
+        .inventory-table .group-row td:first-child { white-space: nowrap; }
+        .inventory-table .group-row small, .inventory-table .variant-row small { display: block; margin-top: 3px; color: var(--secondary-text-color); font-size: .78rem; font-weight: 400; white-space: normal; }
+        .inventory-table .variant-row td:first-child { padding-left: 32px; }
+        .group-toggle { min-width: 30px; min-height: 30px; margin-right: 8px; padding: 2px; border: 1px solid var(--divider-color); border-radius: 50%; color: var(--primary-text-color); background: var(--card-background-color, var(--primary-background-color)); }
+        .group-toggle:hover, .group-toggle:focus-visible { border-color: var(--primary-color); outline: 2px solid var(--primary-color); }
         .table-sort { min-height: 34px; padding: 4px 2px; border: 0; color: inherit; background: transparent; font-size: inherit; text-align: left; }
         .pagination { display: flex; justify-content: center; align-items: center; gap: 14px; padding: 14px 0 4px; color: var(--secondary-text-color); }
         .recipe-tools { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(150px, .35fr) minmax(150px, .35fr); gap: 10px; align-items: end; margin: 14px 0; }
@@ -430,7 +442,7 @@ class KitchenManagerPanel extends HTMLElement {
             <h1>${title[0]}</h1>
             <div class="muted">${title[1]}</div>
           </div>
-          ${this._view === "kitchen" ? `<button type="button" data-action="create">Add product</button>` : this._view === "meals" ? `<button type="button" data-action="create-meal">Add meal</button>` : ""}
+          ${this._view === "kitchen" ? `<div class="actions"><button class="secondary" type="button" data-action="scan-barcode">Scan barcode</button><button type="button" data-action="create">Add product</button></div>` : this._view === "meals" ? `<button type="button" data-action="create-meal">Add meal</button>` : ""}
         </header>
         <nav aria-label="Kitchen Manager sections">
           <button type="button" data-action="navigate" data-view="kitchen" aria-current="${this._view === "kitchen" ? "page" : "false"}">My Kitchen</button>
@@ -451,6 +463,8 @@ class KitchenManagerPanel extends HTMLElement {
       }
     } else if (this._modal?.type === "picker") {
       this.shadowRoot.querySelector("[data-picker-search]")?.focus();
+    } else if (this._modal?.type === "barcode-scan") {
+      this.shadowRoot.querySelector("#scan-barcode")?.focus();
     }
   }
 
@@ -483,12 +497,12 @@ class KitchenManagerPanel extends HTMLElement {
       <div class="table-scroll">
         <table class="inventory-table">
           <thead><tr>${sortHeader("name", "Product")}${sortHeader("brand", "Brand")}${sortHeader("location", "Default location")}${sortHeader("quantity", "Current stock")}${sortHeader("low", "Status")}${sortHeader("expiry", "Nearest expiry")}</tr></thead>
-          <tbody>${pageItems.map((record) => this._inventoryRow(record)).join("")}</tbody>
+          <tbody>${pageItems.map((row) => row.kind === "group" ? this._groupInventoryRows(row) : this._inventoryRow(row.record)).join("")}</tbody>
         </table>
       </div>
       <div class="pagination" aria-label="Inventory pages">
         <button class="secondary" type="button" data-action="inventory-previous" ${this._inventoryPage <= 1 ? "disabled" : ""}>Previous</button>
-        <span>Page ${this._inventoryPage} of ${pageCount} — ${filtered.length} products</span>
+        <span>Page ${this._inventoryPage} of ${pageCount} — ${filtered.length} inventory rows</span>
         <button class="secondary" type="button" data-action="inventory-next" ${this._inventoryPage >= pageCount ? "disabled" : ""}>Next</button>
       </div>` : `<section class="empty"><h2>No products match these filters</h2><p class="muted">Try another search or filter.</p><button class="secondary" type="button" data-action="reset-inventory-filters">Clear filters</button></section>`}
       <section class="section history">
@@ -499,23 +513,51 @@ class KitchenManagerPanel extends HTMLElement {
 
   _filteredInventory() {
     const query = this._search.trim().toLocaleLowerCase();
-    const filtered = this._products.filter((record) => {
+    const matches = (record) => {
       const { product } = record;
       return (!query || [product.name, product.brand, product.barcode]
         .some((value) => String(value || "").toLocaleLowerCase().includes(query)))
         && (this._locationFilter === "any" || product.default_storage_location === this._locationFilter)
         && (this._lowStockFilter === "any" || (this._lowStockFilter === "low") === record.low_stock);
-    });
+    };
+    const rows = [];
+    const groupedIds = new Set();
+    for (const group of this._groups) {
+      const members = this._products.filter((record) => record.product.group_id === group.id);
+      members.forEach((record) => groupedIds.add(record.product.id));
+      const locationMatches = this._locationFilter === "any"
+        || members.some((record) => record.stock.some((stock) => stock.location === this._locationFilter)
+          || record.product.default_storage_location === this._locationFilter);
+      const searchMatches = !query
+        || group.name.toLocaleLowerCase().includes(query)
+        || members.some((record) => [record.product.name, record.product.brand, record.product.barcode]
+          .some((value) => String(value || "").toLocaleLowerCase().includes(query)));
+      const low = members.some((record) => record.low_stock);
+      const lowMatches = this._lowStockFilter === "any"
+        || (this._lowStockFilter === "low") === low;
+      if (members.length && locationMatches && searchMatches && lowMatches) {
+        rows.push({ kind: "group", group, members });
+      }
+    }
+    for (const record of this._products) {
+      if (!groupedIds.has(record.product.id) && matches(record)) {
+        rows.push({ kind: "product", record });
+      }
+    }
     const { key, direction } = this._inventorySort;
-    const value = (record) => ({
-      name: record.product.name.toLocaleLowerCase(),
-      brand: (record.product.brand || "").toLocaleLowerCase(),
-      location: this._locationName(record.product.default_storage_location).toLocaleLowerCase(),
-      quantity: record.total_quantity,
-      low: record.low_stock ? 0 : 1,
+    const value = (row) => {
+      const group = row.kind === "group" ? row.group : null;
+      const record = row.record;
+      return ({
+      name: (group?.name || record.product.name).toLocaleLowerCase(),
+      brand: group ? row.members.map((item) => item.product.brand || "").join(", ").toLocaleLowerCase() : (record.product.brand || "").toLocaleLowerCase(),
+      location: group ? row.group.locations.map((location) => this._locationName(location)).join(", ").toLocaleLowerCase() : this._locationName(record.product.default_storage_location).toLocaleLowerCase(),
+      quantity: group ? row.group.stock_totals.reduce((sum, total) => sum + total.quantity, 0) : record.total_quantity,
+      low: (group ? row.group.low_stock : record.low_stock) ? 0 : 1,
       expiry: "",
     })[key];
-    return filtered.sort((left, right) => {
+    };
+    return rows.sort((left, right) => {
       const a = value(left);
       const b = value(right);
       const compare = typeof a === "number" ? a - b : String(a).localeCompare(String(b));
@@ -523,12 +565,46 @@ class KitchenManagerPanel extends HTMLElement {
     });
   }
 
-  _inventoryRow(record) {
+  _groupInventoryRows(row) {
+    const { group, members } = row;
+    const expanded = this._expandedGroups.has(group.id);
+    const locations = group.locations.map((location) => this._locationName(location));
+    const locationLabel = locations.length === 1 ? locations[0] : locations.length ? "Multiple locations" : "—";
+    const variants = expanded ? members.map((record) => this._inventoryRow(record, true)).join("") : "";
+    return `<tr class="group-row">
+      <td data-label="Product"><button class="group-toggle" type="button" data-action="toggle-group" data-group-id="${this._escape(group.id)}" aria-expanded="${expanded}" aria-label="${expanded ? "Collapse" : "Expand"} ${this._escape(group.name)}">${expanded ? "−" : "+"}</button><strong>${this._escape(group.name)}</strong><small>${group.variant_count} ${group.variant_count === 1 ? "variant" : "variants"}</small></td>
+      <td data-label="Brand">—</td>
+      <td data-label="Default location">${this._escape(locationLabel)}</td>
+      <td data-label="Current stock">${this._escape(this._groupStockSummary(group))}</td>
+      <td data-label="Status">${group.low_stock ? `<span class="badge">Low stock</span>` : "—"}</td>
+      <td data-label="Nearest expiry">Not tracked</td>
+    </tr>${variants}`;
+  }
+
+  _groupStockSummary(group) {
+    if (!group.stock_totals.length) return "0 items";
+    return group.stock_totals.map((total) => {
+      const count = this._number(total.quantity);
+      const stockUnit = total.unit === "item"
+        ? (total.quantity === 1 ? "item" : "items")
+        : total.unit;
+      const packageInfo = total.package_size == null
+        ? ""
+        : ` · ${this._number(total.package_size)} ${total.package_unit} each`;
+      return `${count} ${stockUnit}${packageInfo}`;
+    }).join("; ");
+  }
+
+  _inventoryRow(record, variant = false) {
     const product = record.product;
-    return `<tr tabindex="0" role="button" data-action="product-detail" data-product-id="${this._escape(product.id)}" aria-label="View ${this._escape(product.name)} details">
-      <td data-label="Product"><strong>${this._escape(product.name)}</strong></td>
+    const stockLocations = [...new Set(record.stock.map((item) => item.location_name || this._locationName(item.location)))];
+    const locationLabel = stockLocations.length
+      ? stockLocations.join(", ")
+      : this._locationName(product.default_storage_location);
+    return `<tr class="${variant ? "variant-row" : ""}" tabindex="0" role="button" data-action="product-detail" data-product-id="${this._escape(product.id)}" aria-label="View ${this._escape(product.name)} details">
+      <td data-label="Product"><strong>${this._escape(product.name)}</strong>${variant && product.package_size != null ? `<small>${this._number(product.package_size)} ${this._escape(product.package_unit)} each${product.barcode ? ` · Barcode ${this._escape(product.barcode)}` : ""}</small>` : ""}${variant && product.package_size == null && product.barcode ? `<small>Barcode ${this._escape(product.barcode)}</small>` : ""}</td>
       <td data-label="Brand">${this._escape(product.brand || "—")}</td>
-      <td data-label="Default location">${this._escape(this._locationName(product.default_storage_location))}</td>
+      <td data-label="${variant ? "Storage location" : "Default location"}">${this._escape(locationLabel)}</td>
       <td data-label="Current stock">${this._escape(this._stockSummary(record))}</td>
       <td data-label="Status">${record.low_stock ? `<span class="badge">Low stock</span>` : "—"}</td>
       <td data-label="Nearest expiry">Not tracked</td>
@@ -558,6 +634,11 @@ class KitchenManagerPanel extends HTMLElement {
       <div class="section-toolbar"><div><h2>Storage locations</h2><p class="muted">Location IDs remain stable when names change. Locations with product or stock history cannot be deleted.</p></div></div>
       <form class="location-create" data-form="location-create"><label for="new-location">Add location</label><input id="new-location" name="name" required maxlength="64" placeholder="e.g. Pantry"><button type="submit">Add location</button></form>
       ${this._locations.length ? `<ul class="location-list">${this._locations.map((item) => `<li><span><strong>${this._escape(item.name)}</strong><small>${this._escape(item.id)}</small></span><span class="actions"><button class="secondary" type="button" data-action="rename-location" data-location-id="${this._escape(item.id)}">Rename</button><button class="secondary danger" type="button" data-action="delete-location" data-location-id="${this._escape(item.id)}">Delete</button></span></li>`).join("")}</ul>` : `<div class="empty"><p>No locations configured.</p></div>`}
+    </section>
+    <section class="section group-settings">
+      <div class="section-toolbar"><div><h2>Product groups</h2><p class="muted">Group related variants for inventory display. Product records and recipe references remain separate.</p></div></div>
+      <form class="location-create" data-form="group-create"><label for="new-group">Create group</label><input id="new-group" name="name" required maxlength="100" placeholder="e.g. Lentils"><button type="submit">Create group</button></form>
+      ${this._groups.length ? `<ul class="location-list">${this._groups.map((item) => `<li><span><strong>${this._escape(item.name)}</strong><small>${item.variant_count} ${item.variant_count === 1 ? "variant" : "variants"}</small></span><span class="actions"><button class="secondary" type="button" data-action="rename-group" data-group-id="${this._escape(item.id)}">Rename</button><button class="secondary danger" type="button" data-action="delete-group" data-group-id="${this._escape(item.id)}">Delete</button></span></li>`).join("")}</ul>` : `<div class="empty"><p>No product groups configured.</p></div>`}
     </section>`;
   }
 
@@ -883,7 +964,6 @@ class KitchenManagerPanel extends HTMLElement {
     }
     this._modal = null;
     this._modalError = "";
-    this._modalError = "";
     this._render();
   }
 
@@ -912,6 +992,18 @@ class KitchenManagerPanel extends HTMLElement {
   _renderModal() {
     if (this._modal.type === "picker") {
       return this._renderPicker();
+    }
+    if (this._modal.type === "barcode-scan") {
+      return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head"><h2 id="modal-title">Add stock by barcode</h2><button class="secondary" type="button" data-action="close" aria-label="Close">×</button></div>
+        ${this._modalErrorMarkup()}
+        <p class="muted">Scan or enter a barcode. A known barcode updates its exact product variant; new products are confirmed before they are saved.</p>
+        <form data-form="barcode-scan" data-operation-id="${this._escape(this._modal.operationId)}">
+          <label for="scan-barcode">Barcode</label><input id="scan-barcode" name="barcode" required autocomplete="off" inputmode="numeric">
+          <label for="scan-quantity">Quantity to add</label><input id="scan-quantity" name="quantity" type="number" min="0.000001" step="any" value="1" required>
+          <div class="form-actions"><button class="secondary" type="button" data-action="close">Cancel</button><button type="submit">Look up barcode</button></div>
+        </form>
+      </section></div>`;
     }
     if (this._modal.type === "meal") {
       const meal = this._modal.meal;
@@ -985,6 +1077,7 @@ class KitchenManagerPanel extends HTMLElement {
           ${this._modalErrorMarkup()}
           <div class="detail-grid">
             <div><strong>Brand</strong><div>${this._escape(product.brand || "—")}</div></div>
+            <div><strong>Group</strong><div>${this._escape(product.group_name || "Ungrouped")}</div></div>
             <div><strong>Default location</strong><div>${this._escape(this._locationName(product.default_storage_location))}</div></div>
             <div><strong>Barcode</strong><div>${this._escape(product.barcode || "—")}</div></div>
             <div><strong>Package</strong><div>${product.package_size == null ? "—" : `${this._number(product.package_size)} ${this._escape(product.package_unit || "")}`}</div></div>
@@ -1011,14 +1104,30 @@ class KitchenManagerPanel extends HTMLElement {
         <form data-form="location-rename" data-location-id="${this._escape(location.id)}"><label for="location-name">Display name</label><input id="location-name" name="name" required maxlength="64" value="${this._escape(location.name)}"><div class="form-actions"><button class="secondary" type="button" data-action="close">Cancel</button><button type="submit">Save name</button></div></form>
       </section></div>`;
     }
+    if (this._modal.type === "product-group") {
+      const group = this._modal.group;
+      return `<div class="modal-backdrop" data-action="backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head"><h2 id="modal-title">Rename product group</h2><button class="secondary" type="button" data-action="close" aria-label="Close">×</button></div>
+        ${this._modalErrorMarkup()}
+        <form data-form="group-rename" data-group-id="${this._escape(group.id)}"><label for="group-name">Name</label><input id="group-name" name="name" required maxlength="100" value="${this._escape(group.name)}"><div class="form-actions"><button class="secondary" type="button" data-action="close">Cancel</button><button type="submit">Save name</button></div></form>
+      </section></div>`;
+    }
     if (this._modal.type === "product") {
-      const product = this._modal.product;
-      const editing = Boolean(product);
+      const product = this._modal.product || this._modal.prefill;
+      const editing = Boolean(this._modal.product);
+      const selectedGroupId = this._modal.selectedGroupId ?? product?.group_id ?? "";
+      const productName = String(product?.name || "").toLocaleLowerCase();
+      const suggestedGroupIds = new Set(
+        this._groups
+          .filter((group) => productName.includes(group.name.toLocaleLowerCase()))
+          .map((group) => group.id),
+      );
       return `<div class="modal-backdrop" data-action="backdrop">
         <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
           <div class="modal-head"><h2 id="modal-title">${editing ? "Edit product" : "Add product"}</h2><button class="secondary" type="button" data-action="close" aria-label="Close">×</button></div>
           ${this._modalErrorMarkup()}
-          <form data-form="product" data-product-id="${this._escape(product?.id || "")}">
+          ${this._modal.lookupError ? `<div class="error" role="alert">Barcode lookup failed: ${this._escape(this._modal.lookupError)} Enter the product details manually below; the barcode and requested quantity will still be saved.</div>` : ""}
+          <form data-form="product" data-product-id="${this._escape(this._modal.product?.id || "")}">
             <label for="product-name">Name</label>
             <input id="product-name" name="name" required maxlength="200" value="${this._escape(product?.name || "")}">
             <label for="product-brand">Brand (optional)</label>
@@ -1035,6 +1144,16 @@ class KitchenManagerPanel extends HTMLElement {
             <select id="default-location" name="default_storage_location" required>
               ${this._locationOptions(product?.default_storage_location || "cupboard")}
             </select>
+            <label for="product-group">Inventory group (optional)</label>
+            <select id="product-group" name="group_id">
+              <option value="">Ungrouped</option>
+              ${this._groups.map((group) => `<option value="${this._escape(group.id)}" ${group.id === selectedGroupId ? "selected" : ""}>${this._escape(group.name)}${suggestedGroupIds.has(group.id) ? " (suggested)" : ""}</option>`).join("")}
+              <option value="__new__" ${selectedGroupId === "__new__" ? "selected" : ""}>Create a new group...</option>
+            </select>
+            <div data-new-group-fields ${selectedGroupId === "__new__" ? "" : "hidden"}>
+              <label for="product-new-group">New group name</label>
+              <input id="product-new-group" name="new_group_name" maxlength="100" ${selectedGroupId === "__new__" ? "required" : "disabled"}>
+            </div>
               <label for="ingredient-name">Generic ingredient (optional)</label>
               <input id="ingredient-name" name="ingredient_name" value="${this._escape(this._modal.ingredientName || "")}" placeholder="For sharing recipes later">
               <label for="product-description">Description (optional)</label>
@@ -1103,6 +1222,17 @@ class KitchenManagerPanel extends HTMLElement {
       this._inventoryPage = 1;
       this._render();
     });
+    const productGroup = this.shadowRoot.querySelector("#product-group");
+    productGroup?.addEventListener("change", () => {
+      this._modal.selectedGroupId = productGroup.value;
+      const newGroupFields = this.shadowRoot.querySelector("[data-new-group-fields]");
+      const newGroupName = newGroupFields.querySelector("input");
+      const createGroup = productGroup.value === "__new__";
+      newGroupFields.hidden = !createGroup;
+      newGroupName.disabled = !createGroup;
+      newGroupName.required = createGroup;
+      if (createGroup) newGroupName.focus();
+    });
     const mealSearch = this.shadowRoot.querySelector("[data-meal-search]");
     mealSearch?.addEventListener("input", () => {
       this._mealQuery = mealSearch.value;
@@ -1160,6 +1290,9 @@ class KitchenManagerPanel extends HTMLElement {
     } else if (action === "create") {
       this._modalError = "";
       this._modal = { type: "product" };
+    } else if (action === "scan-barcode") {
+      this._modalError = "";
+      this._modal = { type: "barcode-scan", operationId: this._newOperationId() };
     } else if (action === "edit") {
       const record = this._products.find((item) => item.product.id === element.dataset.productId);
       this._modalError = "";
@@ -1254,6 +1387,15 @@ class KitchenManagerPanel extends HTMLElement {
       };
       this._render();
       return;
+    } else if (action === "toggle-group") {
+      const groupId = element.dataset.groupId;
+      if (this._expandedGroups.has(groupId)) {
+        this._expandedGroups.delete(groupId);
+      } else {
+        this._expandedGroups.add(groupId);
+      }
+      this._render();
+      return;
     } else if (action === "inventory-previous" || action === "inventory-next") {
       this._inventoryPage += action === "inventory-next" ? 1 : -1;
       this._render();
@@ -1275,6 +1417,24 @@ class KitchenManagerPanel extends HTMLElement {
         this._modalError = "";
         this._modal = { type: "location", location };
       }
+    } else if (action === "rename-group") {
+      const group = this._groups.find((item) => item.id === element.dataset.groupId);
+      if (group) {
+        this._modalError = "";
+        this._modal = { type: "product-group", group };
+      }
+    } else if (action === "delete-group") {
+      const group = this._groups.find((item) => item.id === element.dataset.groupId);
+      if (group && window.confirm(`Delete "${group.name}"? Unassign all its variants first.`)) {
+        try {
+          await this._request("product-group/delete", { group_id: group.id });
+          await this._loadSettings();
+        } catch (error) {
+          this._error = error.message || "The group could not be deleted.";
+          this._render();
+        }
+      }
+      return;
     } else if (action === "delete-location") {
       const location = this._locations.find((item) => item.id === element.dataset.locationId);
       if (location && window.confirm(`Delete the unused location "${location.name}"?`)) {
@@ -1338,6 +1498,49 @@ class KitchenManagerPanel extends HTMLElement {
         await this._load(String(data.get("search") || "").trim());
         return;
       }
+      if (form.dataset.form === "barcode-scan") {
+        const barcode = String(data.get("barcode") || "").trim();
+        const quantity = Number(data.get("quantity"));
+        const operationId = form.dataset.operationId;
+        let lookup = null;
+        let lookupError = "";
+        try {
+          lookup = await this._request("barcode/lookup", { barcode });
+        } catch (error) {
+          lookupError = error.message || "The product service is unavailable.";
+        }
+        if (!lookupError && lookup.matched) {
+          const product = lookup.product;
+          await this._request("barcode/register", {
+            name: product.name,
+            barcode,
+            quantity,
+            brand: product.brand || undefined,
+            package_size: product.package_size ?? undefined,
+            package_unit: product.package_unit || undefined,
+            group_id: product.group_id || undefined,
+            default_storage_location: product.default_storage_location,
+            data_source: product.data_source,
+            operation_id: operationId,
+          });
+          this._modal = null;
+          this._modalError = "";
+          await this._load();
+          return;
+        }
+        this._modal = {
+          type: "product",
+          prefill: lookup?.product || { barcode },
+          pendingBarcode: barcode,
+          pendingQuantity: quantity,
+          pendingOperationId: operationId,
+          dataSource: lookup?.product?.data_source || "manual",
+          lookupError,
+        };
+        this._modalError = "";
+        this._render();
+        return;
+      }
       if (form.dataset.form === "location-create") {
         await this._request("location/create", { name: String(data.get("name") || "").trim() });
         await this._loadSettings();
@@ -1346,6 +1549,23 @@ class KitchenManagerPanel extends HTMLElement {
       if (form.dataset.form === "location-rename") {
         await this._request("location/rename", {
           location_id: form.dataset.locationId,
+          name: String(data.get("name") || "").trim(),
+        });
+        this._modalError = "";
+        this._modal = null;
+        await this._loadSettings();
+        return;
+      }
+      if (form.dataset.form === "group-create") {
+        await this._request("product-group/create", {
+          name: String(data.get("name") || "").trim(),
+        });
+        await this._loadSettings();
+        return;
+      }
+      if (form.dataset.form === "group-rename") {
+        await this._request("product-group/update", {
+          group_id: form.dataset.groupId,
           name: String(data.get("name") || "").trim(),
         });
         this._modalError = "";
@@ -1410,6 +1630,19 @@ class KitchenManagerPanel extends HTMLElement {
         await this._loadMeals();
         return;
       } else {
+        if (String(data.get("group_id") || "") === "__new__") {
+          const groupName = String(data.get("new_group_name") || "").trim();
+          this._modal.selectedGroupId = "__new__";
+          if (!groupName) {
+            throw new Error("Enter a name for the new product group.");
+          }
+          const result = await this._request("product-group/create", {
+            name: groupName,
+          });
+          this._groups.push({ ...result.group, variant_count: 0 });
+          this._modal.selectedGroupId = result.group.id;
+          data.set("group_id", result.group.id);
+        }
         const fields = this._productFields(data, form.dataset.productId);
         if (form.dataset.productId) {
           await this._request("product/update", {
@@ -1417,7 +1650,16 @@ class KitchenManagerPanel extends HTMLElement {
             ...fields.update,
           });
         } else {
-          await this._request("product/create", fields.create);
+          if (this._modal.pendingBarcode) {
+            await this._request("barcode/register", {
+              ...fields.create,
+              barcode: this._modal.pendingBarcode,
+              quantity: this._modal.pendingQuantity,
+              operation_id: this._modal.pendingOperationId,
+            });
+          } else {
+            await this._request("product/create", fields.create);
+          }
         }
       }
       this._modal = null;
@@ -1460,6 +1702,7 @@ class KitchenManagerPanel extends HTMLElement {
     const threshold = String(data.get("reorder_threshold") || "").trim();
     const ingredientName = String(data.get("ingredient_name") || "").trim();
     const defaultLocation = String(data.get("default_storage_location") || "").trim();
+    const groupId = String(data.get("group_id") || "").trim();
     if (!defaultLocation) {
       throw new Error("Enter a default storage location.");
     }
@@ -1468,6 +1711,16 @@ class KitchenManagerPanel extends HTMLElement {
     }
     const create = { name, default_storage_location: defaultLocation };
     const update = { name, default_storage_location: defaultLocation, clear_fields: [] };
+    if (groupId) {
+      create.group_id = groupId;
+      update.group_id = groupId;
+    } else if (productId) {
+      const current = this._products.find((item) => item.product.id === productId);
+      if (current?.product.group_id) update.clear_fields.push("group");
+    }
+    if (!productId && this._modal.dataSource) {
+      create.data_source = this._modal.dataSource;
+    }
     if (ingredientName) {
       create.ingredient_name = ingredientName;
       update.ingredient_name = ingredientName;
@@ -1514,6 +1767,11 @@ class KitchenManagerPanel extends HTMLElement {
 
   _number(value) {
     return new Intl.NumberFormat(undefined, { maximumFractionDigits: 3 }).format(value);
+  }
+
+  _newOperationId() {
+    return window.crypto?.randomUUID?.()
+      || `scan-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
 
   _showError(message) {
