@@ -109,7 +109,7 @@ shopping list.
 4. Download **Kitchen Manager**, restart Home Assistant, and add the integration
    from **Settings → Devices & services → Add integration**.
 
-To update an existing HACS installation to **0.6.0**, open **HACS →
+To update an existing HACS installation to **0.6.1**, open **HACS →
 Integrations**, select Kitchen Manager, choose **Update** (or download the
 pending update), and restart Home Assistant. Your saved products, stock,
 meals, recurrence rules, and planner selections are retained. Generated random

@@ -463,6 +463,9 @@ async def test_unknown_barcode_registration_saves_variant_and_stock_atomically(
         barcode="4012345678901",
         package_size=400,
         package_unit="g",
+        ingredient_name="Baked beans",
+        description="Beans in tomato sauce",
+        reorder_threshold=2,
         group_id=group["id"],
         quantity=3,
         data_source=DataSource.OPEN_FOOD_FACTS,
@@ -479,9 +482,12 @@ async def test_unknown_barcode_registration_saves_variant_and_stock_atomically(
 
     assert registered["product"]["id"] == retry["product"]["id"]
     assert registered["product"]["data_source"] == DataSource.OPEN_FOOD_FACTS
+    assert registered["product"]["description"] == "Beans in tomato sauce"
+    assert registered["product"]["reorder_threshold"] == 2
     assert registered["stock"]["quantity"] == 3
     assert retry["stock"] == registered["stock"]
     assert len(engine.list_products()) == 1
+    assert engine.list_products()[0]["ingredient_name"] == "Baked beans"
     assert len(engine._storage.data.transactions) == 1
 
 

@@ -383,8 +383,11 @@ class InventoryEngine:
         barcode: str,
         quantity: float,
         brand: str | None = None,
+        description: str | None = None,
         package_size: float | None = None,
         package_unit: str | None = None,
+        ingredient_name: str | None = None,
+        reorder_threshold: float | None = None,
         group_id: str | None = None,
         default_storage_location: str = "cupboard",
         data_source: DataSource = DataSource.MANUAL,
@@ -398,6 +401,8 @@ class InventoryEngine:
         requested_location = _location(default_storage_location)
         if operation_id is not None and not operation_id.strip():
             raise InventoryError("operation_id must not be empty")
+        if ingredient_name is not None:
+            Ingredient(id="pending", name=ingredient_name)
 
         def mutate(data: KitchenManagerData) -> tuple[dict[str, Any], bool]:
             selected_location = _resolve_or_create_location(
@@ -440,14 +445,37 @@ class InventoryEngine:
                     name=name,
                     brand=brand,
                     barcode=barcode,
+                    description=description,
                     package_size=package_size,
                     package_unit=package_unit,
+                    reorder_threshold=reorder_threshold,
                     group_id=group_id,
                     default_storage_location=selected_location,
                     data_source=data_source,
                 )
                 if group_id is not None and group_id not in data.product_groups:
                     raise InventoryError(f"Unknown product group: {group_id}")
+                if ingredient_name is not None:
+                    normalized = ingredient_name.strip().casefold()
+                    ingredient = next(
+                        (
+                            item
+                            for item in data.ingredients.values()
+                            if item.name.casefold() == normalized
+                        ),
+                        None,
+                    )
+                    if ingredient is None:
+                        ingredient_id = re.sub(
+                            r"[^a-z0-9]+", "-", normalized
+                        ).strip("-") or uuid4().hex
+                        if ingredient_id in data.ingredients:
+                            ingredient_id = f"{ingredient_id}-{uuid4().hex[:8]}"
+                        ingredient = Ingredient(
+                            id=ingredient_id, name=ingredient_name
+                        )
+                        data.ingredients[ingredient.id] = ingredient
+                    product.ingredient_id = ingredient.id
                 if any(
                     not product.barcode
                     and not item.barcode

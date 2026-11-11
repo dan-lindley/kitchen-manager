@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.1
+
+- Consolidated barcode lookup, product details, generic ingredient, storage
+  location, quantity, and save actions into one responsive Add product card.
+- Added separate **Add to products** and **Add to stock** actions while keeping
+  barcode stock registration idempotent and exact-match aware.
+- Preserved generic ingredient, description, and reorder-threshold metadata
+  when a newly scanned product is created together with its initial stock.
+
 ## 0.6.0
 
 - Fixed Suggest Meals to replace future `random` assignments as well as fill

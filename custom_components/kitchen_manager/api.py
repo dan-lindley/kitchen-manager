@@ -250,8 +250,11 @@ async def websocket_lookup_barcode(
         vol.Required("barcode"): cv.string,
         vol.Required("quantity"): vol.Any(int, float),
         vol.Optional("brand"): cv.string,
+        vol.Optional("description"): cv.string,
         vol.Optional("package_size"): vol.Any(int, float),
         vol.Optional("package_unit"): cv.string,
+        vol.Optional("ingredient_name"): cv.string,
+        vol.Optional("reorder_threshold"): vol.Any(int, float),
         vol.Optional("group_id"): cv.string,
         vol.Optional("default_storage_location"): cv.string,
         vol.Optional("data_source"): vol.In(

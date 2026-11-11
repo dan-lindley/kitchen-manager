@@ -290,6 +290,24 @@ class KitchenManagerPanel extends HTMLElement {
         .history-list li { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(130px, 1.4fr) minmax(120px, 1fr); gap: 10px; padding: 10px 0; border-top: 1px solid var(--divider-color); }
         .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / 55%); }
         .modal { width: min(100%, 520px); max-height: 90vh; overflow: auto; padding: 20px; border-radius: 16px; background: var(--card-background-color, var(--primary-background-color)); box-shadow: var(--ha-dialog-box-shadow, 0 12px 40px #0005); }
+        .add-product-card { width: min(100%, 700px); }
+        .barcode-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+        .barcode-row label { grid-column: 1 / -1; }
+        .barcode-row button { min-width: 112px; }
+        .lookup-summary { margin: 18px 0 4px; padding: 14px 0; border-top: 1px solid var(--divider-color); border-bottom: 1px solid var(--divider-color); }
+        .lookup-summary small { color: var(--secondary-text-color); font-weight: 700; }
+        .lookup-summary h3 { margin: 5px 0 2px; font-size: 1.05rem; }
+        .lookup-summary p { margin: 0; color: var(--secondary-text-color); }
+        .add-product-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+        .add-product-fields .wide { grid-column: 1 / -1; }
+        .quantity-row { display: flex; align-items: center; gap: 9px; margin: 20px 0 12px; padding-top: 16px; border-top: 1px solid var(--divider-color); }
+        .quantity-row label { margin: 0 auto 0 0; }
+        .quantity-row input { width: 72px; min-height: 36px; padding: 5px; text-align: center; }
+        .quantity-row button { min-width: 36px; min-height: 36px; padding: 4px 9px; border-radius: 50%; }
+        .add-product-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .add-product-actions button { width: 100%; }
+        .product-more { margin-top: 14px; }
+        .product-more[open] summary { margin-bottom: 4px; }
         .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; }
         .modal-head button { min-width: 42px; padding: 6px; }
         label { display: block; margin: 12px 0 5px; font-size: .92rem; font-weight: 600; }
@@ -456,6 +474,9 @@ class KitchenManagerPanel extends HTMLElement {
           .picker-pages { justify-content: space-between; }
           .picker-actions { display: grid; grid-template-columns: 1fr 1fr; }
           .picker-actions button { min-height: 46px; }
+          .add-product-fields { grid-template-columns: 1fr; }
+          .add-product-fields .wide { grid-column: auto; }
+          .add-product-actions { grid-template-columns: 1fr; }
         }
         @media (min-width: 601px) and (max-width: 980px) {
           .week-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -494,6 +515,8 @@ class KitchenManagerPanel extends HTMLElement {
       this.shadowRoot.querySelector("[data-picker-search]")?.focus();
     } else if (this._modal?.type === "barcode-scan") {
       this.shadowRoot.querySelector("#scan-barcode")?.focus();
+    } else if (this._modal?.type === "product" && !this._modal.product) {
+      this.shadowRoot.querySelector("#add-product-barcode")?.focus();
     }
   }
 
@@ -1148,6 +1171,72 @@ class KitchenManagerPanel extends HTMLElement {
     if (this._modal.type === "product") {
       const product = this._modal.product || this._modal.prefill;
       const editing = Boolean(this._modal.product);
+      if (!editing) {
+        const existing = Boolean(this._modal.existingProductId);
+        const lookupComplete = Boolean(this._modal.lookupComplete);
+        const selectedGroupId = this._modal.selectedGroupId ?? product?.group_id ?? "";
+        const ingredientNames = [...new Set(
+          this._products
+            .map((record) => record.ingredient_name)
+            .filter(Boolean),
+        )].sort((left, right) => left.localeCompare(right));
+        const resultHeading = product?.name || "No product details found";
+        const resultMeta = [
+          product?.brand,
+          product?.package_size != null
+            ? `${this._number(product.package_size)} ${product.package_unit || ""}`.trim()
+            : "",
+        ].filter(Boolean).join(" · ");
+        return `<div class="modal-backdrop" data-action="backdrop">
+          <section class="modal add-product-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+            <div class="modal-head"><h2 id="modal-title">Add product</h2><button class="secondary" type="button" data-action="close" aria-label="Close">×</button></div>
+            ${this._modalErrorMarkup()}
+            <form data-form="add-product" data-existing-product-id="${this._escape(this._modal.existingProductId || "")}" data-operation-id="${this._escape(this._modal.operationId || "")}">
+              <div class="barcode-row">
+                <label for="add-product-barcode">Barcode</label>
+                <input id="add-product-barcode" name="barcode" data-focus-key="add-product-barcode" inputmode="numeric" autocomplete="off" value="${this._escape(product?.barcode || this._modal.barcode || "")}" placeholder="Scan or type a barcode">
+                <button class="secondary" type="submit" data-intent="lookup" formnovalidate>Look up</button>
+              </div>
+              ${lookupComplete ? `<div class="lookup-summary" aria-live="polite"><small>${existing ? "PRODUCT ALREADY IN YOUR CATALOGUE" : product?.name ? "PRODUCT DETAILS FOUND" : "NO DETAILS FOUND"}</small><h3>${this._escape(resultHeading)}</h3>${resultMeta ? `<p>${this._escape(resultMeta)}</p>` : ""}</div>` : `<p class="muted">Enter a barcode to look up product details, or fill in the product manually.</p>`}
+              <div class="add-product-fields">
+                <div class="wide"><label for="add-product-name">Product name</label><input id="add-product-name" name="name" required maxlength="200" value="${this._escape(product?.name || "")}" ${existing ? "readonly" : ""}></div>
+                <div><label for="add-product-brand">Brand</label><input id="add-product-brand" name="brand" value="${this._escape(product?.brand || "")}" ${existing ? "readonly" : ""}></div>
+                <div><label for="add-product-ingredient">Generic product</label><input id="add-product-ingredient" name="ingredient_name" list="generic-product-options" value="${this._escape(this._modal.ingredientName || "")}" placeholder="e.g. Lentils" ${existing ? "readonly" : ""}><datalist id="generic-product-options">${ingredientNames.map((name) => `<option value="${this._escape(name)}"></option>`).join("")}</datalist></div>
+                <div><label for="add-product-location">Storage location</label><select id="add-product-location" name="default_storage_location" required>${this._locationOptions(this._modal.storageLocation || product?.default_storage_location || "cupboard")}</select></div>
+                <div><label for="add-package-size">Package size</label><input id="add-package-size" name="package_size" type="number" min="0.000001" step="any" value="${product?.package_size ?? ""}" ${existing ? "readonly" : ""}></div>
+                <div><label for="add-package-unit">Package unit</label><input id="add-package-unit" name="package_unit" value="${this._escape(product?.package_unit || "")}" placeholder="g, ml, pack" ${existing ? "readonly" : ""}></div>
+              </div>
+              ${existing ? "" : `<details class="product-more">
+                <summary>More product details</summary>
+                <label for="product-group">Inventory group (optional)</label>
+                <select id="product-group" name="group_id">
+                  <option value="">Ungrouped</option>
+                  ${this._groups.map((group) => `<option value="${this._escape(group.id)}" ${group.id === selectedGroupId ? "selected" : ""}>${this._escape(group.name)}</option>`).join("")}
+                  <option value="__new__" ${selectedGroupId === "__new__" ? "selected" : ""}>Create a new group...</option>
+                </select>
+                <div data-new-group-fields ${selectedGroupId === "__new__" ? "" : "hidden"}>
+                  <label for="add-product-new-group">New group name</label>
+                  <input id="add-product-new-group" name="new_group_name" maxlength="100" ${selectedGroupId === "__new__" ? "required" : "disabled"}>
+                </div>
+                <label for="add-reorder-threshold">Reorder below (optional)</label>
+                <input id="add-reorder-threshold" name="reorder_threshold" type="number" min="0" step="any" placeholder="No threshold">
+                <label for="add-product-description">Description (optional)</label>
+                <textarea id="add-product-description" name="description" rows="2"></textarea>
+              </details>`}
+              <div class="quantity-row">
+                <label for="add-product-quantity">Quantity</label>
+                <button class="secondary" type="button" data-action="quantity-down" aria-label="Decrease quantity">−</button>
+                <input id="add-product-quantity" name="quantity" type="number" min="1" step="1" value="${this._escape(this._modal.quantity ?? 1)}" required>
+                <button class="secondary" type="button" data-action="quantity-up" aria-label="Increase quantity">+</button>
+              </div>
+              <div class="add-product-actions">
+                <button class="secondary" type="submit" data-intent="catalogue" ${existing ? "disabled" : ""}>${existing ? "Already in products" : "Add to products"}</button>
+                <button type="submit" data-intent="stock">Add to stock</button>
+              </div>
+            </form>
+          </section>
+        </div>`;
+      }
       const selectedGroupId = this._modal.selectedGroupId ?? product?.group_id ?? "";
       const productName = String(product?.name || "").toLocaleLowerCase();
       const suggestedGroupIds = new Set(
@@ -1322,10 +1411,17 @@ class KitchenManagerPanel extends HTMLElement {
       return;
     } else if (action === "create") {
       this._modalError = "";
-      this._modal = { type: "product" };
+      this._modal = { type: "product", quantity: 1, operationId: this._newOperationId() };
     } else if (action === "scan-barcode") {
       this._modalError = "";
-      this._modal = { type: "barcode-scan", operationId: this._newOperationId() };
+      this._modal = { type: "product", quantity: 1, operationId: this._newOperationId() };
+    } else if (action === "quantity-down" || action === "quantity-up") {
+      const quantity = element.closest("form")?.querySelector('[name="quantity"]');
+      if (quantity) {
+        const current = Number(quantity.value) || 1;
+        quantity.value = Math.max(1, current + (action === "quantity-up" ? 1 : -1));
+      }
+      return;
     } else if (action === "edit") {
       const record = this._products.find((item) => item.product.id === element.dataset.productId);
       this._modalError = "";
@@ -1548,12 +1644,105 @@ class KitchenManagerPanel extends HTMLElement {
     event.preventDefault();
     const form = event.currentTarget;
     const data = new FormData(form);
-    const submit = form.querySelector('button[type="submit"]');
+    const submit = event.submitter || form.querySelector('button[type="submit"]');
     submit.disabled = true;
     this._error = "";
     try {
       if (form.dataset.form === "search") {
         await this._load(String(data.get("search") || "").trim());
+        return;
+      }
+      if (form.dataset.form === "add-product") {
+        const intent = event.submitter?.dataset.intent || "stock";
+        const barcode = String(data.get("barcode") || "").trim();
+        const quantity = Number(data.get("quantity"));
+        const location = String(data.get("default_storage_location") || "").trim();
+        if (intent === "lookup") {
+          if (!barcode) throw new Error("Enter a barcode to look up a product.");
+          try {
+            const lookup = await this._request("barcode/lookup", { barcode });
+            const localRecord = lookup.matched
+              ? this._products.find((record) => record.product.id === lookup.product.id)
+              : null;
+            this._modal = {
+              ...this._modal,
+              barcode,
+              prefill: lookup.product || { barcode },
+              lookupComplete: true,
+              existingProductId: lookup.matched ? lookup.product.id : "",
+              ingredientName: localRecord?.ingredient_name || "",
+              storageLocation: lookup.product?.default_storage_location || location,
+              quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : 1,
+              dataSource: lookup.product?.data_source || "manual",
+            };
+            this._modalError = "";
+          } catch (error) {
+            this._modal = {
+              ...this._modal,
+              barcode,
+              prefill: {
+                barcode,
+                name: String(data.get("name") || "").trim(),
+                brand: String(data.get("brand") || "").trim(),
+                package_size: String(data.get("package_size") || "").trim(),
+                package_unit: String(data.get("package_unit") || "").trim(),
+              },
+              lookupComplete: true,
+              existingProductId: "",
+              ingredientName: String(data.get("ingredient_name") || "").trim(),
+              storageLocation: location,
+              quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : 1,
+              dataSource: "manual",
+            };
+            this._modalError = `${error.message || "The product lookup failed."} Enter the details manually below.`;
+          }
+          this._render();
+          return;
+        }
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+          throw new Error("Enter a quantity greater than zero.");
+        }
+        const existingProductId = form.dataset.existingProductId;
+        if (existingProductId) {
+          if (intent === "catalogue") return;
+          await this._request("stock/change", {
+            operation: "add",
+            product_id: existingProductId,
+            quantity,
+            location,
+            operation_id: form.dataset.operationId,
+          });
+        } else {
+          if (String(data.get("group_id") || "") === "__new__") {
+            const groupName = String(data.get("new_group_name") || "").trim();
+            if (!groupName) throw new Error("Enter a name for the new product group.");
+            const result = await this._request("product-group/create", { name: groupName });
+            data.set("group_id", result.group.id);
+          }
+          const fields = this._productFields(data, "");
+          if (intent === "stock" && barcode) {
+            await this._request("barcode/register", {
+              ...fields.create,
+              barcode,
+              quantity,
+              operation_id: form.dataset.operationId,
+            });
+          } else {
+            const created = await this._request("product/create", fields.create);
+            if (intent === "stock") {
+              await this._request("stock/change", {
+                operation: "add",
+                product_id: created.product.id,
+                quantity,
+                location,
+                operation_id: form.dataset.operationId,
+              });
+            }
+          }
+        }
+        this._modal = null;
+        this._modalError = "";
+        await this._load();
         return;
       }
       if (form.dataset.form === "barcode-scan") {
